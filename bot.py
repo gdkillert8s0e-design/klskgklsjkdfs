@@ -97,12 +97,16 @@ async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
     }
 
 async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: str = None):
-    """Получает инвентарь через API с кукой (для приватных инвентарей)."""
-    headers = {}
+    """Получает инвентарь через правильный API с кукой."""
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+    }
     if cookie:
         headers['Cookie'] = f'.ROBLOSECURITY={cookie}'
     
-    base_url = f'https://inventory.roblox.com/v2/users/{user_id}/inventory?limit=100'
+    # Правильный эндпоинт для коллекционных предметов
+    base_url = f'https://inventory.roblox.com/v2/users/{user_id}/inventory?assetTypes=Hat,HairAccessory,FaceAccessory,Gear&limit=100'
     items = []
     cursor = ''
     
@@ -118,32 +122,27 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
                     items.extend(page_items)
                     
                     # Логируем первые предметы для отладки
-                    if len(items) <= 10 and page_items:
-                        for item in page_items[:3]:
-                            logger.info(f"Найден предмет: {item.get('name', 'Unknown')} (ID: {item.get('assetId')})")
+                    if page_items:
+                        logger.info(f"Найдено предметов на странице: {len(page_items)}")
+                        if len(items) <= 10:
+                            for item in page_items[:3]:
+                                logger.info(f"Предмет: {item.get('name', 'Unknown')} (ID: {item.get('assetId')})")
                     
                     cursor = data.get('nextPageCursor')
                     if not cursor:
                         break
-                elif resp.status == 403:
-                    logger.warning(f"Доступ запрещён (403). Инвентарь пользователя {user_id} приватный.")
-                    # Пробуем с прокси-сервером
-                    proxy_url = f'https://inventory.roproxy.com/v2/users/{user_id}/inventory?limit=100'
-                    proxy_url += (f'&cursor={cursor}' if cursor else '')
-                    async with session.get(proxy_url, headers=headers, timeout=10) as proxy_resp:
-                        if proxy_resp.status == 200:
-                            proxy_data = await proxy_resp.json()
-                            proxy_items = proxy_data.get('data', [])
-                            items.extend(proxy_items)
-                            cursor = proxy_data.get('nextPageCursor')
-                            if not cursor:
-                                break
-                        else:
-                            logger.error(f"Не удалось получить инвентарь даже через прокси: {proxy_resp.status}")
-                            break
                 else:
                     logger.warning(f"Не удалось получить инвентарь: HTTP {resp.status}")
-                    break
+                    # Пробуем альтернативный эндпоинт
+                    alt_url = f'https://www.roblox.com/users/inventory/list-json?userId={user_id}&assetTypeId=8&itemsPerPage=100'
+                    alt_url += (f'&cursor={cursor}' if cursor else '')
+                    async with session.get(alt_url, headers=headers, timeout=10) as alt_resp:
+                        if alt_resp.status == 200:
+                            alt_data = await alt_resp.json()
+                            alt_items = alt_data.get('Data', {}).get('Items', [])
+                            items.extend(alt_items)
+                            logger.info(f"Через альтернативный API найдено: {len(alt_items)}")
+                        break
         except Exception as e:
             logger.error(f"Ошибка при запросе инвентаря: {e}")
             break
@@ -169,7 +168,7 @@ async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dic
     item = {
         'name': data.get('Name', 'Unknown'),
         'type': data.get('AssetTypeId'),
-        'created': data.get('Created')  # Это дата создания предмета
+        'created': data.get('Created')
     }
 
     # Сохраняем в кэш
