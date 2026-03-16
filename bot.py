@@ -19,7 +19,7 @@ import tempfile
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
 OWNER_ID = 5883796026
-ADMIN_IDS = [OWNER_ID]
+ADMIN_IDS = [115536598]
 # =================================
 
 # Лимиты запросов к API
@@ -95,34 +95,47 @@ async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
         'description': data.get('description', '')
     }
 
-async def get_user_restrictions(user_id: int, session: aiohttp.ClientSession) -> dict:
-    return {'email': False, '2fa': False}
-
-async def get_user_premium(user_id: int, session: aiohttp.ClientSession) -> int:
-    return 0
-
 async def get_inventory(user_id: int, session: aiohttp.ClientSession):
-    base_url = f'https://inventory.rprxy.xyz/v1/users/{user_id}/assets/collectibles?limit=100'
+    """Получает все коллекционные предметы аккаунта."""
+    base_url = f'https://inventory.rprxy.xyz/v2/users/{user_id}/inventory?limit=100'
     items = []
     cursor = ''
+    
+    logger.info(f"Запрашиваем инвентарь для пользователя {user_id}")
+    
     while True:
         url = base_url + (f'&cursor={cursor}' if cursor else '')
         data = await fetch_json(session, url)
         if not data:
+            logger.warning(f"Не удалось получить инвентарь для {user_id}")
             break
-        items.extend(data.get('data', []))
+        
+        # В inventory v2 данные лежат в поле 'data'
+        page_items = data.get('data', [])
+        items.extend(page_items)
+        
+        # Логируем первые несколько предметов для отладки
+        if len(items) <= 10:
+            for item in page_items[:3]:
+                logger.info(f"Найден предмет: {item.get('name', 'Unknown')} (ID: {item.get('assetId')})")
+        
         cursor = data.get('nextPageCursor')
         if not cursor:
             break
+    
+    logger.info(f"Всего найдено предметов: {len(items)}")
     return items
 
 async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dict | None:
+    """Получает детали предмета (название, тип, дата создания)."""
+    # Проверяем кэш
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute('SELECT name, type, created FROM items_cache WHERE asset_id = ?', (asset_id,))
         row = await cursor.fetchone()
         if row:
             return {'name': row[0], 'type': row[1], 'created': row[2]}
 
+    # Запрос к economy API
     url = f'https://economy.roblox.com/v2/assets/{asset_id}/details'
     data = await fetch_json(session, url)
     if not data:
@@ -134,6 +147,7 @@ async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dic
         'created': data.get('Created')
     }
 
+    # Сохраняем в кэш
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('''
             INSERT OR REPLACE INTO items_cache (asset_id, name, type, created, last_updated)
@@ -150,44 +164,49 @@ async def check_account(cookie: str, settings: dict) -> dict:
         'username': None,
         'created': None,
         'age_verified': False,
-        'has_email': False,
-        'has_2fa': False,
-        'donate': 0,
         'items': [],
         'rare_count': 0
     }
 
     async with aiohttp.ClientSession() as session:
+        # 1. Получаем UserId и ник
         user_id, username = await get_user_id_from_cookie(cookie)
         if not user_id:
             result['error'] = 'Недействительная кука'
             return result
         result['user_id'] = user_id
         result['username'] = username
+        logger.info(f"Проверяем аккаунт: {username} (ID: {user_id})")
 
+        # 2. Информация о пользователе
         user_info = await get_user_info(user_id, session)
         result['created'] = user_info.get('created', '')
         result['age_verified'] = user_info.get('age_verified', False)
 
-        result['has_email'] = False
-        result['has_2fa'] = False
-        result['donate'] = 0
-
+        # 3. Инвентарь
         inventory = await get_inventory(user_id, session)
 
+        # 4. Фильтруем по типам и годам
         target_types = settings.get('item_types', [8, 41, 18, 19])
         year_range = settings.get('year_range', (2006, 2016))
+        
+        logger.info(f"Ищем предметы типов {target_types} за {year_range[0]}-{year_range[1]} годы")
 
         sem = asyncio.Semaphore(REQUESTS_PER_SECOND)
 
         async def process_item(item):
             async with sem:
-                asset_id = item['assetId']
+                asset_id = item.get('assetId')
+                if not asset_id:
+                    return
+                
                 details = await get_item_details(asset_id, session)
                 if not details:
                     return
+                
                 if details['type'] not in target_types:
                     return
+                
                 if details['created']:
                     try:
                         year = int(details['created'][:4])
@@ -198,14 +217,17 @@ async def check_account(cookie: str, settings: dict) -> dict:
                                 'type': details['type'],
                                 'created': details['created']
                             })
+                            logger.info(f"✅ Найден старый предмет: {details['name']} ({year})")
                     except:
                         pass
 
-        tasks = [process_item(item) for item in inventory]
+        tasks = [process_item(item) for item in inventory if item.get('assetId')]
         await asyncio.gather(*tasks)
 
         result['items'].sort(key=lambda x: x['created'])
         result['rare_count'] = len(result['items'])
+        
+        logger.info(f"Найдено старых предметов: {result['rare_count']}")
 
         return result
 
@@ -228,6 +250,13 @@ def settings_keyboard():
     builder.button(text="📅 Диапазон лет", callback_data="set_years")
     builder.button(text="🎩 Типы предметов", callback_data="set_types")
     builder.button(text="◀️ Назад", callback_data="main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def years_keyboard():
+    """Клавиатура для меню настройки лет с кнопкой назад"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад к настройкам", callback_data="settings")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -254,8 +283,6 @@ async def cmd_start(message: types.Message):
         "👋 <b>Roblox Account Checker</b>\n\n"
         "Пришли мне .ROBLOSECURITY куку (текстом или файлом), и я покажу:\n"
         "• Ник, дату создания, верификацию\n"
-        "• Наличие email и 2FA\n"
-        "• Сумму доната\n"
         "• Все старые шляпы/гиры/лица с датами\n\n"
         "Результат можно скачать в .txt файле.",
         reply_markup=main_keyboard()
@@ -298,7 +325,8 @@ async def set_years_start(callback: types.CallbackQuery, state: FSMContext):
     current = user_settings.get(callback.from_user.id, {}).get('year_range', (2006, 2016))
     await callback.message.edit_text(
         f"📅 Текущий диапазон: {current[0]}–{current[1]}\n\n"
-        "Введите новый диапазон в формате <code>2006-2016</code>:"
+        "Введите новый диапазон в формате <code>2006-2016</code>:",
+        reply_markup=years_keyboard()  # Добавляем кнопку "Назад"
     )
     await state.set_state(Settings.waiting_for_years)
     await callback.answer()
@@ -406,13 +434,11 @@ async def process_cookie(message: types.Message, cookie: str):
         await status_msg.edit_text(f"❌ {result['error']}")
         return
 
+    # Формируем отчёт
     report = f"=== ROBLOX ACCOUNT REPORT ===\n\n"
     report += f"👤 Ник: {result['username']} (ID: {result['user_id']})\n"
     report += f"📅 Создан: {result['created'][:10] if result['created'] else 'Неизвестно'}\n"
-    report += f"✅ Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n"
-    report += f"📧 Email: {'Да' if result['has_email'] else 'Нет'}\n"
-    report += f"🔐 2FA: {'Да' if result['has_2fa'] else 'Нет'}\n"
-    report += f"💰 Донат всего: {result['donate']} R$\n\n"
+    report += f"✅ Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n\n"
 
     if result['rare_count'] > 0:
         report += f"🎩 НАЙДЕНО СТАРЫХ ПРЕДМЕТОВ: {result['rare_count']}\n"
@@ -424,15 +450,18 @@ async def process_cookie(message: types.Message, cookie: str):
     else:
         report += "😕 Старых предметов не найдено.\n"
 
+    # Сохраняем в файл
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.txt', delete=False) as f:
         f.write(report)
         temp_path = f.name
 
+    # Обновляем статистику
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('UPDATE stats SET value = value + 1 WHERE key = "total_checks"')
         await db.execute('UPDATE stats SET value = value + ? WHERE key = "rare_finds"', (result['rare_count'],))
         await db.commit()
 
+    # Отправляем результат
     await status_msg.edit_text(
         f"✅ <b>Готово!</b>\n\n"
         f"Аккаунт: {result['username']}\n"
@@ -440,9 +469,11 @@ async def process_cookie(message: types.Message, cookie: str):
         parse_mode=ParseMode.HTML
     )
 
+    # Отправляем файл с полным отчётом
     doc = FSInputFile(temp_path, filename=f"{result['username']}_report.txt")
     await message.answer_document(doc)
 
+    # Удаляем временный файл
     os.unlink(temp_path)
 
 # ----- Запуск -----
