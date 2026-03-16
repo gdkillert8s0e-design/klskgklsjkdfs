@@ -14,26 +14,16 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
 import tempfile
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
 OWNER_ID = 5883796026
 ADMIN_IDS = [OWNER_ID]
-
-# ========== НАСТРОЙКИ ПРОКСИ ==========
-USE_PROXY = True
-PROXY_TYPE = "socks5"
-PROXY_HOST = "nl.free.zoogvpn.com"
-PROXY_PORT = 1080
-PROXY_LOGIN = None   # Без логина
-PROXY_PASSWORD = None  # Без пароля
-# ======================================
+# =================================
 
 # Лимиты запросов к API
 REQUESTS_PER_SECOND = 5
-# =================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +38,6 @@ DB_PATH = "roblox_checker.db"
 
 # ----- Хранилище настроек пользователя -----
 user_settings = {}
-
 
 # ----- Инициализация БД -----
 async def init_db():
@@ -74,7 +63,6 @@ async def init_db():
         await db.commit()
     logger.info("База данных инициализирована")
 
-
 # ----- Вспомогательные функции для работы с Roblox API -----
 async def fetch_json(session, url, headers=None):
     try:
@@ -88,7 +76,6 @@ async def fetch_json(session, url, headers=None):
         logger.error(f"Request error: {e}")
         return None
 
-
 async def get_user_id_from_cookie(cookie: str) -> tuple[int | None, str | None]:
     headers = {'Cookie': f'.ROBLOSECURITY={cookie}'}
     async with aiohttp.ClientSession() as session:
@@ -96,7 +83,6 @@ async def get_user_id_from_cookie(cookie: str) -> tuple[int | None, str | None]:
         if data and 'id' in data and 'name' in data:
             return data['id'], data['name']
     return None, None
-
 
 async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
     url = f'https://users.roblox.com/v1/users/{user_id}'
@@ -109,14 +95,11 @@ async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
         'description': data.get('description', '')
     }
 
-
 async def get_user_restrictions(user_id: int, session: aiohttp.ClientSession) -> dict:
     return {'email': False, '2fa': False}
 
-
 async def get_user_premium(user_id: int, session: aiohttp.ClientSession) -> int:
     return 0
-
 
 async def get_inventory(user_id: int, session: aiohttp.ClientSession):
     base_url = f'https://inventory.rprxy.xyz/v1/users/{user_id}/assets/collectibles?limit=100'
@@ -132,7 +115,6 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession):
         if not cursor:
             break
     return items
-
 
 async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dict | None:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -160,7 +142,6 @@ async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dic
         await db.commit()
 
     return item
-
 
 async def check_account(cookie: str, settings: dict) -> dict:
     result = {
@@ -228,12 +209,10 @@ async def check_account(cookie: str, settings: dict) -> dict:
 
         return result
 
-
 # ----- Состояния FSM -----
 class Settings(StatesGroup):
     waiting_for_years = State()
     waiting_for_item_types = State()
-
 
 # ----- Клавиатуры -----
 def main_keyboard():
@@ -244,7 +223,6 @@ def main_keyboard():
     builder.adjust(1)
     return builder.as_markup()
 
-
 def settings_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="📅 Диапазон лет", callback_data="set_years")
@@ -252,7 +230,6 @@ def settings_keyboard():
     builder.button(text="◀️ Назад", callback_data="main_menu")
     builder.adjust(1)
     return builder.as_markup()
-
 
 def types_keyboard(current_types):
     type_names = {8: "🎩 Шляпы", 41: "💇 Причёски", 18: "😐 Лица", 19: "⚙️ Гиры"}
@@ -265,7 +242,6 @@ def types_keyboard(current_types):
     builder.button(text="◀️ Назад", callback_data="settings")
     builder.adjust(1)
     return builder.as_markup()
-
 
 # ----- Обработчики команд -----
 @dp.message(Command("start"))
@@ -285,7 +261,6 @@ async def cmd_start(message: types.Message):
         reply_markup=main_keyboard()
     )
 
-
 @dp.callback_query(F.data == "main_menu")
 async def main_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(
@@ -293,7 +268,6 @@ async def main_menu(callback: types.CallbackQuery):
         reply_markup=main_keyboard()
     )
     await callback.answer()
-
 
 @dp.callback_query(F.data == "settings")
 async def settings_menu(callback: types.CallbackQuery):
@@ -303,7 +277,6 @@ async def settings_menu(callback: types.CallbackQuery):
         reply_markup=settings_keyboard()
     )
     await callback.answer()
-
 
 @dp.callback_query(F.data == "stats")
 async def stats_menu(callback: types.CallbackQuery):
@@ -320,7 +293,6 @@ async def stats_menu(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-
 @dp.callback_query(F.data == "set_years")
 async def set_years_start(callback: types.CallbackQuery, state: FSMContext):
     current = user_settings.get(callback.from_user.id, {}).get('year_range', (2006, 2016))
@@ -330,7 +302,6 @@ async def set_years_start(callback: types.CallbackQuery, state: FSMContext):
     )
     await state.set_state(Settings.waiting_for_years)
     await callback.answer()
-
 
 @dp.message(Settings.waiting_for_years)
 async def process_years(message: types.Message, state: FSMContext):
@@ -352,7 +323,6 @@ async def process_years(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Диапазон установлен: {y1}–{y2}")
     await state.clear()
 
-
 @dp.callback_query(F.data == "set_types")
 async def set_types_start(callback: types.CallbackQuery):
     uid = callback.from_user.id
@@ -362,7 +332,6 @@ async def set_types_start(callback: types.CallbackQuery):
         reply_markup=types_keyboard(current)
     )
     await callback.answer()
-
 
 @dp.callback_query(F.data.startswith("toggle_type_"))
 async def toggle_type(callback: types.CallbackQuery):
@@ -379,7 +348,6 @@ async def toggle_type(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=types_keyboard(current))
     await callback.answer()
 
-
 @dp.callback_query(F.data == "types_all")
 async def types_all(callback: types.CallbackQuery):
     uid = callback.from_user.id
@@ -388,7 +356,6 @@ async def types_all(callback: types.CallbackQuery):
     user_settings[uid]['item_types'] = [8, 41, 18, 19]
     await callback.message.edit_reply_markup(reply_markup=types_keyboard([8, 41, 18, 19]))
     await callback.answer()
-
 
 @dp.callback_query(F.data == "types_none")
 async def types_none(callback: types.CallbackQuery):
@@ -399,7 +366,6 @@ async def types_none(callback: types.CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=types_keyboard([]))
     await callback.answer()
 
-
 @dp.callback_query(F.data == "check_cookie")
 async def check_cookie_prompt(callback: types.CallbackQuery):
     await callback.message.edit_text(
@@ -408,13 +374,11 @@ async def check_cookie_prompt(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-
 @dp.message(F.text)
 async def handle_cookie_text(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         return
     await process_cookie(message, message.text.strip())
-
 
 @dp.message(F.document)
 async def handle_cookie_file(message: types.Message):
@@ -427,7 +391,6 @@ async def handle_cookie_file(message: types.Message):
         cookie = f.read().strip()
     os.remove(file_path)
     await process_cookie(message, cookie)
-
 
 async def process_cookie(message: types.Message, cookie: str):
     status_msg = await message.answer("🔄 Проверяю аккаунт...")
@@ -482,36 +445,27 @@ async def process_cookie(message: types.Message, cookie: str):
 
     os.unlink(temp_path)
 
-
 # ----- Запуск -----
 async def main():
     logger.info("Запуск бота...")
-
-    # Создаём сессию с прокси (только если нужно)
-    bot_session = None
-    if USE_PROXY:
-        proxy_url = f"{PROXY_TYPE}://{PROXY_LOGIN}:{PROXY_PASSWORD}@{PROXY_HOST}:{PROXY_PORT}"
-        logger.info(f"Подключаем прокси: {proxy_url}")
-        bot_session = AiohttpSession(proxy=proxy_url)
-
+    
+    # Создаём бота
     global bot
     bot = Bot(
         token=BOT_TOKEN,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-        session=bot_session
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
-
+    
     logger.info(f"Бот запускается с токеном: {BOT_TOKEN[:10]}...")
     logger.info(f"Владелец: {OWNER_ID}")
-
+    
     await init_db()
-
+    
     try:
         await dp.start_polling(bot)
     except Exception as e:
         logger.error(f"Ошибка при запуске бота: {e}")
         raise
-
 
 if __name__ == '__main__':
     asyncio.run(main())
