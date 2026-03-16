@@ -23,7 +23,7 @@ ADMIN_IDS = [OWNER_ID]
 # =================================
 
 # Лимиты запросов к API
-REQUESTS_PER_SECOND = 5
+REQUESTS_PER_SECOND = 3  # Уменьшил чтобы не получить бан
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,7 +77,7 @@ async def fetch_json(session, url, headers=None):
         return None
 
 async def get_user_id_from_cookie(cookie: str) -> tuple[int | None, str | None]:
-    """Получает UserId и ник по куки. Куки передаётся без изменений."""
+    """Получает UserId и ник по куки."""
     headers = {'Cookie': f'.ROBLOSECURITY={cookie}'}
     async with aiohttp.ClientSession() as session:
         data = await fetch_json(session, 'https://users.roblox.com/v1/users/authenticated', headers)
@@ -97,8 +97,8 @@ async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
     }
 
 async def get_inventory(user_id: int, session: aiohttp.ClientSession):
-    """Получает все коллекционные предметы аккаунта."""
-    base_url = f'https://inventory.rprxy.xyz/v2/users/{user_id}/inventory?limit=100'
+    """Получает все коллекционные предметы аккаунта напрямую через официальный API."""
+    base_url = f'https://inventory.roblox.com/v2/users/{user_id}/inventory?limit=100'
     items = []
     cursor = ''
     
@@ -114,6 +114,9 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession):
         page_items = data.get('data', [])
         items.extend(page_items)
         
+        # Небольшая задержка между страницами
+        await asyncio.sleep(0.5)
+        
         cursor = data.get('nextPageCursor')
         if not cursor:
             break
@@ -122,7 +125,7 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession):
     return items
 
 async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dict | None:
-    """Получает детали предмета (название, тип, дата создания) через catalog API."""
+    """Получает детали предмета (название, тип, дата создания)."""
     # Проверяем кэш
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute('SELECT name, type, created FROM items_cache WHERE asset_id = ?', (asset_id,))
@@ -130,46 +133,27 @@ async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dic
         if row:
             return {'name': row[0], 'type': row[1], 'created': row[2]}
 
-    # Запрос к catalog API
-    url = f'https://catalog.roblox.com/v1/catalog/items/details'
-    payload = {"items": [{"itemType": "Asset", "id": asset_id}]}
-    
-    try:
-        async with session.post(url, json=payload, timeout=10) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                item_data = data.get('data', [])
-                if item_data:
-                    item = item_data[0]
-                    name = item.get('name', 'Unknown')
-                    
-                    # Запрашиваем дату создания отдельно
-                    created = None
-                    details_url = f'https://economy.roblox.com/v2/assets/{asset_id}/details'
-                    details_resp = await fetch_json(session, details_url)
-                    if details_resp:
-                        created = details_resp.get('Created')
-                    
-                    item_info = {
-                        'name': name,
-                        'type': item.get('assetType'),
-                        'created': created
-                    }
-                    
-                    # Сохраняем в кэш
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute('''
-                            INSERT OR REPLACE INTO items_cache (asset_id, name, type, created, last_updated)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (asset_id, item_info['name'], item_info['type'], 
-                              item_info['created'], datetime.now().isoformat()))
-                        await db.commit()
-                    
-                    return item_info
-    except Exception as e:
-        logger.error(f"Ошибка при получении деталей предмета {asset_id}: {e}")
-    
-    return None
+    # Запрос к economy API
+    url = f'https://economy.roblox.com/v2/assets/{asset_id}/details'
+    data = await fetch_json(session, url)
+    if not data:
+        return None
+
+    item = {
+        'name': data.get('Name', 'Unknown'),
+        'type': data.get('AssetTypeId'),
+        'created': data.get('Created')  # Это дата создания предмета
+    }
+
+    # Сохраняем в кэш
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT OR REPLACE INTO items_cache (asset_id, name, type, created, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (asset_id, item['name'], item['type'], item['created'], datetime.now().isoformat()))
+        await db.commit()
+
+    return item
 
 async def check_account(cookie: str, settings: dict) -> dict:
     result = {
@@ -450,16 +434,19 @@ async def process_cookie(message: types.Message, cookie: str):
     # Формируем отчёт
     report = f"=== ROBLOX ACCOUNT REPORT ===\n\n"
     report += f"👤 Ник: {result['username']} (ID: {result['user_id']})\n"
-    report += f"📅 Создан: {result['created'][:10] if result['created'] else 'Неизвестно'}\n"
+    report += f"📅 Создан аккаунт: {result['created'][:10] if result['created'] else 'Неизвестно'}\n"
     report += f"✅ Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n\n"
 
     if result['rare_count'] > 0:
         report += f"🎩 НАЙДЕНО СТАРЫХ ПРЕДМЕТОВ: {result['rare_count']}\n"
         report += "─" * 40 + "\n"
         for item in result['items']:
+            # Дата создания предмета (а не дата получения)
+            item_date = item['created'][:10] if item['created'] else 'Неизвестно'
             report += f"• {item['name']}\n"
             report += f"  ID: {item['id']}\n"
-            report += f"  Дата создания: {item['created'][:10]}\n\n"
+            report += f"  Тип: {item['type']}\n"
+            report += f"  Дата создания предмета: {item_date}\n\n"
     else:
         report += "😕 Старых предметов не найдено.\n"
 
