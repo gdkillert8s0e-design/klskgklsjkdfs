@@ -16,25 +16,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 
-# ========== ПРЕМИУМ ЭМОДЗИ ==========
-EMOJI = {
-    'start': '<tg-emoji emoji-id="5257963315258204021">👋</tg-emoji>',
-    'search': '<tg-emoji emoji-id="5368324170671202287">🔍</tg-emoji>',
-    'settings': '<tg-emoji emoji-id="5368324170671202286">⚙️</tg-emoji>',
-    'stats': '<tg-emoji emoji-id="5368324170671202299">📊</tg-emoji>',
-    'back': '<tg-emoji emoji-id="5893057118545646106">◀️</tg-emoji>',
-    'check': '<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>',
-    'error': '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>',
-    'hat': '<tg-emoji emoji-id="5404870433939922916">🎩</tg-emoji>',
-    'hair': '<tg-emoji emoji-id="5404870433939922912">💇</tg-emoji>',
-    'face': '<tg-emoji emoji-id="5404870433939922913">😐</tg-emoji>',
-    'gear': '<tg-emoji emoji-id="5404870433939922911">⚙️</tg-emoji>',
-    'code': '<tg-emoji emoji-id="5940433880585605708">🔨</tg-emoji>',
-    'link': '<tg-emoji emoji-id="5769289093221454192">🔗</tg-emoji>',
-    'limited': '<tg-emoji emoji-id="5404870433939922908">💎</tg-emoji>',
-}
-# =================================
-
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
 ADMIN_IDS = [5883796026]  # Можно добавлять через запятую
@@ -346,13 +327,13 @@ async def cmd_start(message: types.Message):
         await message.answer("⛔ Доступ запрещён.")
         return
     await message.answer(
-        f"{EMOJI['start']} <b>Roblox Offsale Checker</b>\n\n"
-        f"{EMOJI['search']} Пришли мне .ROBLOSECURITY куки, и я покажу все оффсейл предметы на аккаунте\n"
-        f"{EMOJI['limited']} <i>Ищем только limited/limitedU предметы</i>\n\n"
-        f"{EMOJI['settings']} В настройках можно:\n"
-        f"• Выбрать диапазон лет\n"
-        f"• Выбрать типы предметов\n"
-        f"• Включить/выключить поиск кодовых предметов",
+        "👋 <b>Roblox Offsale Checker</b>\n\n"
+        "🔍 Пришли мне .ROBLOSECURITY куки, и я покажу все оффсейл предметы на аккаунте\n"
+        "💎 <i>Ищем только limited/limitedU предметы</i>\n\n"
+        "⚙️ В настройках можно:\n"
+        "• Выбрать диапазон лет\n"
+        "• Выбрать типы предметов\n"
+        "• Включить/выключить поиск кодовых предметов",
         reply_markup=main_keyboard(),
         parse_mode=ParseMode.HTML
     )
@@ -360,7 +341,7 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data == "main_menu")
 async def main_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        f"{EMOJI['start']} <b>Главное меню</b>",
+        "👋 <b>Главное меню</b>",
         reply_markup=main_keyboard(),
         parse_mode=ParseMode.HTML
     )
@@ -370,8 +351,8 @@ async def main_menu(callback: types.CallbackQuery):
 async def settings_menu(callback: types.CallbackQuery):
     uid = callback.from_user.id
     await callback.message.edit_text(
-        f"{EMOJI['settings']} <b>Настройки</b>\n\n"
-        f"Выберите, что хотите изменить:",
+        "⚙️ <b>Настройки</b>\n\n"
+        "Выберите, что хотите изменить:",
         reply_markup=settings_keyboard(uid),
         parse_mode=ParseMode.HTML
     )
@@ -385,7 +366,7 @@ async def stats_menu(callback: types.CallbackQuery):
         cursor = await db.execute('SELECT value FROM stats WHERE key = "rare_finds"')
         rare = (await cursor.fetchone())[0]
     await callback.message.edit_text(
-        f"{EMOJI['stats']} <b>Статистика</b>\n\n"
+        f"📊 <b>Статистика</b>\n\n"
         f"Всего проверено аккаунтов: {total}\n"
         f"Найдено редких предметов: {rare}",
         reply_markup=settings_keyboard(callback.from_user.id),
@@ -407,7 +388,7 @@ async def toggle_code(callback: types.CallbackQuery):
 async def set_years_start(callback: types.CallbackQuery, state: FSMContext):
     current = user_settings.get(callback.from_user.id, {}).get('year_range', (2006, 2016))
     await callback.message.edit_text(
-        f"{EMOJI['settings']} <b>Текущий диапазон:</b> {current[0]}–{current[1]}\n\n"
+        f"📅 <b>Текущий диапазон:</b> {current[0]}–{current[1]}\n\n"
         "Введите новый диапазон в формате <code>2006-2016</code>:",
         reply_markup=years_keyboard(),
         parse_mode=ParseMode.HTML
@@ -423,7 +404,7 @@ async def process_years(message: types.Message, state: FSMContext):
     text = message.text.strip()
     match = re.match(r'^(\d{4})-(\d{4})$', text)
     if not match:
-        await message.answer(f"{EMOJI['error']} Неверный формат. Используйте 2006-2016")
+        await message.answer("❌ Неверный формат. Используйте 2006-2016")
         return
     y1, y2 = int(match[1]), int(match[2])
     if y1 > y2:
@@ -432,7 +413,7 @@ async def process_years(message: types.Message, state: FSMContext):
     if uid not in user_settings:
         user_settings[uid] = {}
     user_settings[uid]['year_range'] = (y1, y2)
-    await message.answer(f"{EMOJI['check']} Диапазон установлен: {y1}–{y2}")
+    await message.answer(f"✅ Диапазон установлен: {y1}–{y2}")
     await state.clear()
 
 @dp.callback_query(F.data == "set_types")
@@ -440,7 +421,7 @@ async def set_types_start(callback: types.CallbackQuery):
     uid = callback.from_user.id
     current = user_settings.get(uid, {}).get('item_types', [8, 41, 18, 19])
     await callback.message.edit_text(
-        f"{EMOJI['settings']} <b>Выберите типы предметов для поиска</b>",
+        "🎩 <b>Выберите типы предметов для поиска</b>",
         reply_markup=types_keyboard(current),
         parse_mode=ParseMode.HTML
     )
@@ -482,7 +463,7 @@ async def types_none(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "check_cookie")
 async def check_cookie_prompt(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        f"{EMOJI['search']} Отправьте .ROBLOSECURITY куки (текстом) или .txt файл с куки.",
+        "🔍 Отправьте .ROBLOSECURITY куки (текстом) или .txt файл с куки.",
         reply_markup=settings_keyboard(callback.from_user.id),
         parse_mode=ParseMode.HTML
     )
@@ -510,7 +491,7 @@ async def handle_cookie_file(message: types.Message):
             os.remove(file_path)
 
 async def process_cookie(message: types.Message, cookie: str):
-    status_msg = await message.answer(f"{EMOJI['search']} Проверяю аккаунт...")
+    status_msg = await message.answer("🔄 Проверяю аккаунт...")
     uid = message.from_user.id
     settings = user_settings.get(uid, {
         'year_range': (2006, 2016),
@@ -521,7 +502,7 @@ async def process_cookie(message: types.Message, cookie: str):
     result = await check_account(cookie, settings)
 
     if result['error']:
-        await status_msg.edit_text(f"{EMOJI['error']} {result['error']}")
+        await status_msg.edit_text(f"❌ {result['error']}")
         return
 
     # Формируем отчёт
@@ -566,7 +547,7 @@ async def process_cookie(message: types.Message, cookie: str):
     # Отправляем результат
     total_items = result['rare_count'] + result['code_count']
     await status_msg.edit_text(
-        f"{EMOJI['check']} <b>Готово!</b>\n\n"
+        f"✅ <b>Готово!</b>\n\n"
         f"Аккаунт: {result['username']}\n"
         f"Найдено предметов: {total_items}",
         parse_mode=ParseMode.HTML
@@ -574,7 +555,7 @@ async def process_cookie(message: types.Message, cookie: str):
 
     # Отправляем файл с полным отчётом
     doc = FSInputFile(temp_path, filename=f"{safe_username}_report.txt")
-    await message.answer_document(doc, caption=f"{EMOJI['stats']} Полный отчёт")
+    await message.answer_document(doc, caption="📊 Полный отчёт")
 
     # Удаляем временный файл
     os.unlink(temp_path)
