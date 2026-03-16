@@ -190,7 +190,6 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
     if cookie:
         headers['Cookie'] = f'.ROBLOSECURITY={cookie}'
     
-    # Эндпоинт для коллекционных предметов
     base_url = f'https://inventory.roblox.com/v2/users/{user_id}/inventory?limit=100'
     items = []
     cursor = ''
@@ -205,7 +204,7 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
                     data = await resp.json()
                     page_items = data.get('data', [])
                     
-                    # Фильтруем только оффсейл предметы (те у которых есть collectibleItemId)
+                    # Фильтруем только оффсейл предметы
                     for item in page_items:
                         if item.get('collectibleItemId'):
                             items.append(item)
@@ -268,7 +267,6 @@ async def check_account(cookie: str, settings: dict) -> dict:
     }
 
     async with aiohttp.ClientSession() as session:
-        # 1. Получаем UserId и ник
         user_id, username = await get_user_id_from_cookie(cookie)
         if not user_id:
             result['error'] = 'Недействительные куки'
@@ -277,15 +275,12 @@ async def check_account(cookie: str, settings: dict) -> dict:
         result['username'] = username
         logger.info(f"Проверяем аккаунт: {username} (ID: {user_id})")
 
-        # 2. Информация о пользователе
         user_info = await get_user_info(user_id, session)
         result['created'] = user_info.get('created', '')
         result['age_verified'] = user_info.get('age_verified', False)
 
-        # 3. Инвентарь (только оффсейл)
         inventory = await get_inventory(user_id, session, cookie)
 
-        # 4. Фильтруем по типам и годам
         target_types = settings.get('item_types', [8, 41, 18, 19])
         year_range = settings.get('year_range', (2006, 2016))
         show_code_items = settings.get('show_code_items', True)
@@ -300,7 +295,6 @@ async def check_account(cookie: str, settings: dict) -> dict:
                 if not asset_id:
                     return
                 
-                # Проверяем, является ли предмет кодовым
                 if show_code_items and asset_id in CODE_ITEMS:
                     result['code_items'].append({
                         'id': asset_id,
@@ -391,7 +385,7 @@ def types_keyboard(current_types):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
-        await message.answer(f"{EMOJI['error']} Доступ запрещён.")
+        await message.answer("⛔ Доступ запрещён.")
         return
     
     await message.answer(
@@ -552,10 +546,13 @@ async def handle_cookie_file(message: types.Message):
     file = await bot.get_file(message.document.file_id)
     file_path = f"temp_{message.document.file_name}"
     await bot.download_file(file.file_path, file_path)
-    with open(file_path, 'r', encoding='utf-8') as f:
-        cookie = f.read().strip()
-    os.remove(file_path)
-    await process_cookie(message, cookie)
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            cookie = f.read().strip()
+        await process_cookie(message, cookie)
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 async def process_cookie(message: types.Message, cookie: str):
     status_msg = await message.answer(f"{EMOJI['search']} Проверяю аккаунт...")
@@ -573,32 +570,35 @@ async def process_cookie(message: types.Message, cookie: str):
         return
 
     # Формируем отчёт
-    report = f"=== ROBLOX OFFSALE REPORT ===\n\n"
-    report += f"{EMOJI['start']} Ник: {result['username']} (ID: {result['user_id']})\n"
-    report += f"{EMOJI['stats']} Создан аккаунт: {result['created'][:10] if result['created'] else 'Неизвестно'}\n"
-    report += f"{EMOJI['check']} Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n\n"
+    report_lines = []
+    report_lines.append("=== ROBLOX OFFSALE REPORT ===\n")
+    report_lines.append(f"👤 Ник: {result['username']} (ID: {result['user_id']})")
+    report_lines.append(f"📅 Создан аккаунт: {result['created'][:10] if result['created'] else 'Неизвестно'}")
+    report_lines.append(f"✅ Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n")
 
     if result['code_count'] > 0 and settings.get('show_code_items', True):
-        report += f"{EMOJI['code']} <b>КОДОВЫЕ ПРЕДМЕТЫ: {result['code_count']}</b>\n"
-        report += "─" * 40 + "\n"
+        report_lines.append(f"\n🔨 КОДОВЫЕ ПРЕДМЕТЫ: {result['code_count']}")
+        report_lines.append("─" * 40)
         for item in result['code_items']:
-            report += f"• {item['name']}\n"
-            report += f"  {EMOJI['link']} https://www.roblox.com/catalog/{item['id']}\n\n"
+            report_lines.append(f"• {item['name']}")
+            report_lines.append(f"  Ссылка: https://www.roblox.com/catalog/{item['id']}\n")
 
     if result['rare_count'] > 0:
-        report += f"{EMOJI['limited']} <b>ОФФСЕЙЛ ПРЕДМЕТЫ ЗА {settings['year_range'][0]}-{settings['year_range'][1]}: {result['rare_count']}</b>\n"
-        report += "─" * 40 + "\n"
+        report_lines.append(f"\n💎 ОФФСЕЙЛ ПРЕДМЕТЫ ЗА {settings['year_range'][0]}-{settings['year_range'][1]}: {result['rare_count']}")
+        report_lines.append("─" * 40)
         for item in result['items']:
             item_date = item['created'][:4] if item['created'] else 'Неизвестно'
             item_type = {8: "🎩", 41: "💇", 18: "😐", 19: "⚙️"}.get(item['type'], "📦")
-            report += f"{item_type} {item['name']} ({item_date})\n"
-            report += f"  {EMOJI['link']} https://www.roblox.com/catalog/{item['id']}\n\n"
+            report_lines.append(f"{item_type} {item['name']} ({item_date})")
+            report_lines.append(f"  Ссылка: https://www.roblox.com/catalog/{item['id']}\n")
     else:
-        report += f"{EMOJI['error']} Оффсейл предметов за {settings['year_range'][0]}-{settings['year_range'][1]} не найдено.\n"
+        report_lines.append(f"\n❌ Оффсейл предметов за {settings['year_range'][0]}-{settings['year_range'][1]} не найдено.")
+
+    report = "\n".join(report_lines)
 
     # Сохраняем в файл
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.txt', delete=False) as f:
-        f.write(report.replace('<b>', '').replace('</b>', '').replace(EMOJI['link'], '[Ссылка]'))
+        f.write(report)
         temp_path = f.name
 
     # Обновляем статистику
@@ -621,13 +621,13 @@ async def process_cookie(message: types.Message, cookie: str):
     await message.answer_document(doc, caption=f"{EMOJI['stats']} Полный отчёт")
 
     # Удаляем временный файл
-    os.unlink(temp_path)
+    if os.path.exists(temp_path):
+        os.unlink(temp_path)
 
 # ----- Запуск -----
 async def main():
     logger.info("Запуск бота...")
     
-    # Создаём бота
     global bot
     bot = Bot(
         token=BOT_TOKEN,
