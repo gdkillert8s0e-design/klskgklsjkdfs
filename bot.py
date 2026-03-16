@@ -21,6 +21,13 @@ BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
 ADMIN_IDS = [5883796026]  # Можно добавлять через запятую
 # =================================
 
+# Дефолтные настройки
+DEFAULT_SETTINGS = {
+    'year_range': (2006, 2016),
+    'item_types': [8, 41, 18, 19],
+    'show_code_items': True
+}
+
 REQUESTS_PER_SECOND = 3
 
 logging.basicConfig(
@@ -31,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 dp = Dispatcher(storage=MemoryStorage())
 DB_PATH = "roblox_checker.db"
-user_settings = {}
+user_settings = {}  # хранилище настроек пользователей
 
 # ----- Список кодовых предметов -----
 CODE_ITEMS = {
@@ -102,6 +109,15 @@ CODE_ITEMS = {
     128540492: "Winning Smile",
 }
 
+# ----- Функция получения настроек пользователя -----
+def get_user_settings(uid: int) -> dict:
+    """Возвращает настройки пользователя, дополняя их дефолтными."""
+    settings = user_settings.get(uid, {})
+    # Создаём копию дефолтных настроек и обновляем из сохранённых
+    result = DEFAULT_SETTINGS.copy()
+    result.update(settings)
+    return result
+
 # ----- Инициализация БД -----
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -164,13 +180,23 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
     items = []
     cursor = ''
     logger.info(f"Запрашиваем инвентарь для пользователя {user_id}")
+    page_num = 0
     while True:
+        page_num += 1
         url = base_url + (f'&cursor={cursor}' if cursor else '')
         try:
             async with session.get(url, headers=headers, timeout=10) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    for item in data.get('data', []):
+                    # Логируем количество элементов на странице
+                    page_items = data.get('data', [])
+                    logger.info(f"Страница {page_num}: получено {len(page_items)} предметов")
+                    # Для отладки покажем первые 3 предмета
+                    if page_items:
+                        for i, item in enumerate(page_items[:3]):
+                            logger.info(f"  Пример {i+1}: {item.get('name')} (ID: {item.get('assetId')}) collectibleItemId={item.get('collectibleItemId')}")
+                    # Фильтруем по наличию collectibleItemId (коллекционные предметы)
+                    for item in page_items:
                         if item.get('collectibleItemId'):
                             items.append(item)
                     cursor = data.get('nextPageCursor')
@@ -182,7 +208,7 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
         except Exception as e:
             logger.error(f"Ошибка при запросе инвентаря: {e}")
             break
-    logger.info(f"Найдено оффсейл предметов: {len(items)}")
+    logger.info(f"Найдено коллекционных предметов: {len(items)}")
     return items
 
 async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dict | None:
@@ -291,7 +317,7 @@ def main_keyboard():
     return builder.as_markup()
 
 def settings_keyboard(uid):
-    s = user_settings.get(uid, {})
+    s = get_user_settings(uid)
     code_status = s.get('show_code_items', True)
     code_text = f"{'✅' if code_status else '⬜'} Кодовые предметы"
     builder = InlineKeyboardBuilder()
@@ -377,16 +403,15 @@ async def stats_menu(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "toggle_code")
 async def toggle_code(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    if uid not in user_settings:
-        user_settings[uid] = {}
-    current = user_settings[uid].get('show_code_items', True)
+    current = get_user_settings(uid)['show_code_items']
+    user_settings[uid] = user_settings.get(uid, {})
     user_settings[uid]['show_code_items'] = not current
     await callback.message.edit_reply_markup(reply_markup=settings_keyboard(uid))
     await callback.answer(f"Поиск кодовых предметов: {'включён' if not current else 'выключен'}")
 
 @dp.callback_query(F.data == "set_years")
 async def set_years_start(callback: types.CallbackQuery, state: FSMContext):
-    current = user_settings.get(callback.from_user.id, {}).get('year_range', (2006, 2016))
+    current = get_user_settings(callback.from_user.id)['year_range']
     await callback.message.edit_text(
         f"📅 <b>Текущий диапазон:</b> {current[0]}–{current[1]}\n\n"
         "Введите новый диапазон в формате <code>2006-2016</code>:",
@@ -419,7 +444,7 @@ async def process_years(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "set_types")
 async def set_types_start(callback: types.CallbackQuery):
     uid = callback.from_user.id
-    current = user_settings.get(uid, {}).get('item_types', [8, 41, 18, 19])
+    current = get_user_settings(uid)['item_types']
     await callback.message.edit_text(
         "🎩 <b>Выберите типы предметов для поиска</b>",
         reply_markup=types_keyboard(current),
@@ -493,11 +518,7 @@ async def handle_cookie_file(message: types.Message):
 async def process_cookie(message: types.Message, cookie: str):
     status_msg = await message.answer("🔄 Проверяю аккаунт...")
     uid = message.from_user.id
-    settings = user_settings.get(uid, {
-        'year_range': (2006, 2016),
-        'item_types': [8, 41, 18, 19],
-        'show_code_items': True
-    })
+    settings = get_user_settings(uid)
 
     result = await check_account(cookie, settings)
 
