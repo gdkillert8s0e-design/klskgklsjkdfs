@@ -23,7 +23,7 @@ ADMIN_IDS = [OWNER_ID]
 # =================================
 
 # Лимиты запросов к API
-REQUESTS_PER_SECOND = 3  # Уменьшил чтобы не получить бан
+REQUESTS_PER_SECOND = 3
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,8 +96,12 @@ async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
         'description': data.get('description', '')
     }
 
-async def get_inventory(user_id: int, session: aiohttp.ClientSession):
-    """Получает все коллекционные предметы аккаунта напрямую через официальный API."""
+async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: str = None):
+    """Получает инвентарь через API с кукой (для приватных инвентарей)."""
+    headers = {}
+    if cookie:
+        headers['Cookie'] = f'.ROBLOSECURITY={cookie}'
+    
     base_url = f'https://inventory.roblox.com/v2/users/{user_id}/inventory?limit=100'
     items = []
     cursor = ''
@@ -106,19 +110,42 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession):
     
     while True:
         url = base_url + (f'&cursor={cursor}' if cursor else '')
-        data = await fetch_json(session, url)
-        if not data:
-            logger.warning(f"Не удалось получить инвентарь для {user_id}")
-            break
-        
-        page_items = data.get('data', [])
-        items.extend(page_items)
-        
-        # Небольшая задержка между страницами
-        await asyncio.sleep(0.5)
-        
-        cursor = data.get('nextPageCursor')
-        if not cursor:
+        try:
+            async with session.get(url, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    page_items = data.get('data', [])
+                    items.extend(page_items)
+                    
+                    # Логируем первые предметы для отладки
+                    if len(items) <= 10 and page_items:
+                        for item in page_items[:3]:
+                            logger.info(f"Найден предмет: {item.get('name', 'Unknown')} (ID: {item.get('assetId')})")
+                    
+                    cursor = data.get('nextPageCursor')
+                    if not cursor:
+                        break
+                elif resp.status == 403:
+                    logger.warning(f"Доступ запрещён (403). Инвентарь пользователя {user_id} приватный.")
+                    # Пробуем с прокси-сервером
+                    proxy_url = f'https://inventory.roproxy.com/v2/users/{user_id}/inventory?limit=100'
+                    proxy_url += (f'&cursor={cursor}' if cursor else '')
+                    async with session.get(proxy_url, headers=headers, timeout=10) as proxy_resp:
+                        if proxy_resp.status == 200:
+                            proxy_data = await proxy_resp.json()
+                            proxy_items = proxy_data.get('data', [])
+                            items.extend(proxy_items)
+                            cursor = proxy_data.get('nextPageCursor')
+                            if not cursor:
+                                break
+                        else:
+                            logger.error(f"Не удалось получить инвентарь даже через прокси: {proxy_resp.status}")
+                            break
+                else:
+                    logger.warning(f"Не удалось получить инвентарь: HTTP {resp.status}")
+                    break
+        except Exception as e:
+            logger.error(f"Ошибка при запросе инвентаря: {e}")
             break
     
     logger.info(f"Всего найдено предметов: {len(items)}")
@@ -181,8 +208,8 @@ async def check_account(cookie: str, settings: dict) -> dict:
         result['created'] = user_info.get('created', '')
         result['age_verified'] = user_info.get('age_verified', False)
 
-        # 3. Инвентарь
-        inventory = await get_inventory(user_id, session)
+        # 3. Инвентарь (теперь с кукой!)
+        inventory = await get_inventory(user_id, session, cookie)
 
         # 4. Фильтруем по типам и годам
         target_types = settings.get('item_types', [8, 41, 18, 19])
@@ -441,11 +468,10 @@ async def process_cookie(message: types.Message, cookie: str):
         report += f"🎩 НАЙДЕНО СТАРЫХ ПРЕДМЕТОВ: {result['rare_count']}\n"
         report += "─" * 40 + "\n"
         for item in result['items']:
-            # Дата создания предмета (а не дата получения)
             item_date = item['created'][:10] if item['created'] else 'Неизвестно'
             report += f"• {item['name']}\n"
             report += f"  ID: {item['id']}\n"
-            report += f"  Тип: {item['type']}\n"
+            report += f"  Тип предмета: {item['type']}\n"
             report += f"  Дата создания предмета: {item_date}\n\n"
     else:
         report += "😕 Старых предметов не найдено.\n"
