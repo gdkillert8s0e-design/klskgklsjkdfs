@@ -122,7 +122,7 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession):
     return items
 
 async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dict | None:
-    """Получает детали предмета (название, тип, дата создания)."""
+    """Получает детали предмета (название, тип, дата создания) через catalog API."""
     # Проверяем кэш
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute('SELECT name, type, created FROM items_cache WHERE asset_id = ?', (asset_id,))
@@ -130,27 +130,46 @@ async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dic
         if row:
             return {'name': row[0], 'type': row[1], 'created': row[2]}
 
-    # Запрос к economy API
-    url = f'https://economy.roblox.com/v2/assets/{asset_id}/details'
-    data = await fetch_json(session, url)
-    if not data:
-        return None
-
-    item = {
-        'name': data.get('Name', 'Unknown'),
-        'type': data.get('AssetTypeId'),
-        'created': data.get('Created')
-    }
-
-    # Сохраняем в кэш
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-            INSERT OR REPLACE INTO items_cache (asset_id, name, type, created, last_updated)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (asset_id, item['name'], item['type'], item['created'], datetime.now().isoformat()))
-        await db.commit()
-
-    return item
+    # Запрос к catalog API
+    url = f'https://catalog.roblox.com/v1/catalog/items/details'
+    payload = {"items": [{"itemType": "Asset", "id": asset_id}]}
+    
+    try:
+        async with session.post(url, json=payload, timeout=10) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                item_data = data.get('data', [])
+                if item_data:
+                    item = item_data[0]
+                    name = item.get('name', 'Unknown')
+                    
+                    # Запрашиваем дату создания отдельно
+                    created = None
+                    details_url = f'https://economy.roblox.com/v2/assets/{asset_id}/details'
+                    details_resp = await fetch_json(session, details_url)
+                    if details_resp:
+                        created = details_resp.get('Created')
+                    
+                    item_info = {
+                        'name': name,
+                        'type': item.get('assetType'),
+                        'created': created
+                    }
+                    
+                    # Сохраняем в кэш
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute('''
+                            INSERT OR REPLACE INTO items_cache (asset_id, name, type, created, last_updated)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (asset_id, item_info['name'], item_info['type'], 
+                              item_info['created'], datetime.now().isoformat()))
+                        await db.commit()
+                    
+                    return item_info
+    except Exception as e:
+        logger.error(f"Ошибка при получении деталей предмета {asset_id}: {e}")
+    
+    return None
 
 async def check_account(cookie: str, settings: dict) -> dict:
     result = {
@@ -164,7 +183,7 @@ async def check_account(cookie: str, settings: dict) -> dict:
     }
 
     async with aiohttp.ClientSession() as session:
-        # 1. Получаем UserId и ник (куки передаётся без изменений)
+        # 1. Получаем UserId и ник
         user_id, username = await get_user_id_from_cookie(cookie)
         if not user_id:
             result['error'] = 'Недействительные куки'
@@ -249,7 +268,6 @@ def settings_keyboard():
     return builder.as_markup()
 
 def years_keyboard():
-    """Клавиатура для меню настройки лет с кнопкой назад"""
     builder = InlineKeyboardBuilder()
     builder.button(text="◀️ Назад к настройкам", callback_data="settings")
     builder.adjust(1)
@@ -441,7 +459,7 @@ async def process_cookie(message: types.Message, cookie: str):
         for item in result['items']:
             report += f"• {item['name']}\n"
             report += f"  ID: {item['id']}\n"
-            report += f"  Дата получения: {item['created'][:10]}\n\n"
+            report += f"  Дата создания: {item['created'][:10]}\n\n"
     else:
         report += "😕 Старых предметов не найдено.\n"
 
