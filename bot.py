@@ -77,6 +77,7 @@ async def fetch_json(session, url, headers=None):
         return None
 
 async def get_user_id_from_cookie(cookie: str) -> tuple[int | None, str | None]:
+    """Получает UserId и ник по куки. Куки передаётся без изменений."""
     headers = {'Cookie': f'.ROBLOSECURITY={cookie}'}
     async with aiohttp.ClientSession() as session:
         data = await fetch_json(session, 'https://users.roblox.com/v1/users/authenticated', headers)
@@ -110,14 +111,8 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession):
             logger.warning(f"Не удалось получить инвентарь для {user_id}")
             break
         
-        # В inventory v2 данные лежат в поле 'data'
         page_items = data.get('data', [])
         items.extend(page_items)
-        
-        # Логируем первые несколько предметов для отладки
-        if len(items) <= 10:
-            for item in page_items[:3]:
-                logger.info(f"Найден предмет: {item.get('name', 'Unknown')} (ID: {item.get('assetId')})")
         
         cursor = data.get('nextPageCursor')
         if not cursor:
@@ -169,10 +164,10 @@ async def check_account(cookie: str, settings: dict) -> dict:
     }
 
     async with aiohttp.ClientSession() as session:
-        # 1. Получаем UserId и ник
+        # 1. Получаем UserId и ник (куки передаётся без изменений)
         user_id, username = await get_user_id_from_cookie(cookie)
         if not user_id:
-            result['error'] = 'Недействительная кука'
+            result['error'] = 'Недействительные куки'
             return result
         result['user_id'] = user_id
         result['username'] = username
@@ -239,7 +234,7 @@ class Settings(StatesGroup):
 # ----- Клавиатуры -----
 def main_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="🔍 Проверить куку", callback_data="check_cookie")
+    builder.button(text="🔍 Проверить куки", callback_data="check_cookie")
     builder.button(text="⚙️ Настройки", callback_data="settings")
     builder.button(text="📊 Статистика", callback_data="stats")
     builder.adjust(1)
@@ -281,7 +276,7 @@ async def cmd_start(message: types.Message):
         return
     await message.answer(
         "👋 <b>Roblox Account Checker</b>\n\n"
-        "Пришли мне .ROBLOSECURITY куку (текстом или файлом), и я покажу:\n"
+        "Пришли мне .ROBLOSECURITY куки (текстом или файлом), и я покажу:\n"
         "• Ник, дату создания, верификацию\n"
         "• Все старые шляпы/гиры/лица с датами\n\n"
         "Результат можно скачать в .txt файле.",
@@ -326,7 +321,7 @@ async def set_years_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"📅 Текущий диапазон: {current[0]}–{current[1]}\n\n"
         "Введите новый диапазон в формате <code>2006-2016</code>:",
-        reply_markup=years_keyboard()  # Добавляем кнопку "Назад"
+        reply_markup=years_keyboard()
     )
     await state.set_state(Settings.waiting_for_years)
     await callback.answer()
@@ -397,7 +392,7 @@ async def types_none(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "check_cookie")
 async def check_cookie_prompt(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        "📤 Отправьте .ROBLOSECURITY куку (текстом) или .txt файл с кукой.",
+        "📤 Отправьте .ROBLOSECURITY куки (текстом) или .txt файл с куки.",
         reply_markup=settings_keyboard()
     )
     await callback.answer()
