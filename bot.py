@@ -18,8 +18,26 @@ import tempfile
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
-OWNER_ID = 5883796026
-ADMIN_IDS = [OWNER_ID]
+ADMIN_IDS = [5883796026]  # Можно добавлять через запятую: [5883796026, 123456789]
+# =================================
+
+# ========== ПРЕМИУМ ЭМОДЗИ ==========
+EMOJI = {
+    'start': '<tg-emoji emoji-id="5257963315258204021">👋</tg-emoji>',
+    'search': '<tg-emoji emoji-id="5368324170671202287">🔍</tg-emoji>',
+    'settings': '<tg-emoji emoji-id="5368324170671202286">⚙️</tg-emoji>',
+    'stats': '<tg-emoji emoji-id="5368324170671202299">📊</tg-emoji>',
+    'back': '<tg-emoji emoji-id="5893057118545646106">◀️</tg-emoji>',
+    'check': '<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>',
+    'error': '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>',
+    'hat': '<tg-emoji emoji-id="5404870433939922916">🎩</tg-emoji>',
+    'hair': '<tg-emoji emoji-id="5404870433939922912">💇</tg-emoji>',
+    'face': '<tg-emoji emoji-id="5404870433939922913">😐</tg-emoji>',
+    'gear': '<tg-emoji emoji-id="5404870433939922911">⚙️</tg-emoji>',
+    'code': '<tg-emoji emoji-id="5940433880585605708">🔨</tg-emoji>',
+    'link': '<tg-emoji emoji-id="5769289093221454192">🔗</tg-emoji>',
+    'limited': '<tg-emoji emoji-id="5404870433939922908">💎</tg-emoji>',
+}
 # =================================
 
 # Лимиты запросов к API
@@ -39,6 +57,75 @@ DB_PATH = "roblox_checker.db"
 # ----- Хранилище настроек пользователя -----
 user_settings = {}
 
+# ----- Список кодовых предметов (ID и название) -----
+CODE_ITEMS = {
+    189934238: "Fireman",
+    4342314393: "Rainbow Squid Unicorn",
+    263405835: "Chicken Headrow",
+    263405839: "Black Iron Tentacles",
+    263405842: "Code Review Specs",
+    263405844: "Stickpack",
+    263405846: "Shark Fin",
+    263405849: "Federation Necklace",
+    263405851: "Backup Mr. Robot",
+    263405853: "Dark Lord of SQL",
+    263405855: "Roblox visor 1",
+    263405857: "Silver Bow Tie",
+    263405859: "Dodgeball Helmet",
+    263405861: "Shoulder Raccoon",
+    263405863: "Dued1",
+    263405865: "Pauldrons",
+    263405867: "Octember Encore",
+    263405869: "Umberhorns",
+    128540404: "Police Cap",
+    128540406: "American Baseball Cap",
+    128540408: "Orange Cap",
+    218491492: "Navy Queen otn",
+    128540410: "Zombie Knit",
+    128540412: "Epic Miners Headlamp",
+    128540414: "Beast Mode Bandana",
+    162295698: "Golden Reingment",
+    128540416: "Beast Scythe",
+    128540418: "Hare Hoodie",
+    128540420: "Diamond Tiara",
+    128540422: "Callmehbob",
+    128540424: "Sword Cane",
+    128540426: "Selfie Stick",
+    128540428: "Phantom Forces Combat Knife",
+    128540430: "Golden Horns",
+    128540432: "The Soup is Dry",
+    128540434: "Monster Grumpy Face",
+    128540436: "Elegant Evening Face",
+    128540438: "Super Pink Make-Up",
+    128540440: "Cyanskeleface",
+    128540442: "Pizza Face",
+    128540444: "Bakonetta",
+    128540446: "Isabella",
+    128540448: "Mon Cheri",
+    128540450: "Rogueish Good Looks",
+    128540452: "Mixologist’s Smile",
+    128540454: "BiteyMcFace",
+    128540456: "Performing Mime",
+    128540458: "Rainbow Spirit Face",
+    128540460: "Mermaid Mystique",
+    128540462: "Starry Eyes Sparkling",
+    128540464: "Sparkling Friendly Wink",
+    128540466: "Kandi’s Sprinkle Face",
+    128540468: "Tears of Sorrow",
+    128540470: "Fashion Face",
+    128540472: "Princess Alexis",
+    128540474: "Otakufaic",
+    128540476: "Pop Queen",
+    128540478: "Assassin Face",
+    128540480: "Sapphire Gaze",
+    128540482: "Persephone's E-Girl",
+    128540484: "Arachnid Queen",
+    128540486: "Rainbow Barf Face",
+    128540488: "Star Sorority",
+    128540490: "Tsundere Face",
+    128540492: "Winning Smile",
+}
+
 # ----- Инициализация БД -----
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -48,7 +135,6 @@ async def init_db():
                 name TEXT,
                 type INTEGER,
                 created TEXT,
-                rap INTEGER,
                 last_updated TEXT
             )
         ''')
@@ -93,11 +179,10 @@ async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
     return {
         'created': data.get('created', ''),
         'age_verified': data.get('hasVerifiedBadge', False),
-        'description': data.get('description', '')
     }
 
 async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: str = None):
-    """Получает инвентарь через правильный API с кукой."""
+    """Получает инвентарь через API с кукой."""
     headers = {
         'Accept': 'application/json',
         'Content-Type': 'application/json'
@@ -105,8 +190,8 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
     if cookie:
         headers['Cookie'] = f'.ROBLOSECURITY={cookie}'
     
-    # Правильный эндпоинт для коллекционных предметов
-    base_url = f'https://inventory.roblox.com/v2/users/{user_id}/inventory?assetTypes=Hat,HairAccessory,FaceAccessory,Gear&limit=100'
+    # Эндпоинт для коллекционных предметов
+    base_url = f'https://inventory.roblox.com/v2/users/{user_id}/inventory?limit=100'
     items = []
     cursor = ''
     
@@ -119,35 +204,23 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
                 if resp.status == 200:
                     data = await resp.json()
                     page_items = data.get('data', [])
-                    items.extend(page_items)
                     
-                    # Логируем первые предметы для отладки
-                    if page_items:
-                        logger.info(f"Найдено предметов на странице: {len(page_items)}")
-                        if len(items) <= 10:
-                            for item in page_items[:3]:
-                                logger.info(f"Предмет: {item.get('name', 'Unknown')} (ID: {item.get('assetId')})")
+                    # Фильтруем только оффсейл предметы (те у которых есть collectibleItemId)
+                    for item in page_items:
+                        if item.get('collectibleItemId'):
+                            items.append(item)
                     
                     cursor = data.get('nextPageCursor')
                     if not cursor:
                         break
                 else:
                     logger.warning(f"Не удалось получить инвентарь: HTTP {resp.status}")
-                    # Пробуем альтернативный эндпоинт
-                    alt_url = f'https://www.roblox.com/users/inventory/list-json?userId={user_id}&assetTypeId=8&itemsPerPage=100'
-                    alt_url += (f'&cursor={cursor}' if cursor else '')
-                    async with session.get(alt_url, headers=headers, timeout=10) as alt_resp:
-                        if alt_resp.status == 200:
-                            alt_data = await alt_resp.json()
-                            alt_items = alt_data.get('Data', {}).get('Items', [])
-                            items.extend(alt_items)
-                            logger.info(f"Через альтернативный API найдено: {len(alt_items)}")
-                        break
+                    break
         except Exception as e:
             logger.error(f"Ошибка при запросе инвентаря: {e}")
             break
     
-    logger.info(f"Всего найдено предметов: {len(items)}")
+    logger.info(f"Найдено оффсейл предметов: {len(items)}")
     return items
 
 async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dict | None:
@@ -189,7 +262,9 @@ async def check_account(cookie: str, settings: dict) -> dict:
         'created': None,
         'age_verified': False,
         'items': [],
-        'rare_count': 0
+        'code_items': [],
+        'rare_count': 0,
+        'code_count': 0
     }
 
     async with aiohttp.ClientSession() as session:
@@ -207,12 +282,13 @@ async def check_account(cookie: str, settings: dict) -> dict:
         result['created'] = user_info.get('created', '')
         result['age_verified'] = user_info.get('age_verified', False)
 
-        # 3. Инвентарь (теперь с кукой!)
+        # 3. Инвентарь (только оффсейл)
         inventory = await get_inventory(user_id, session, cookie)
 
         # 4. Фильтруем по типам и годам
         target_types = settings.get('item_types', [8, 41, 18, 19])
         year_range = settings.get('year_range', (2006, 2016))
+        show_code_items = settings.get('show_code_items', True)
         
         logger.info(f"Ищем предметы типов {target_types} за {year_range[0]}-{year_range[1]} годы")
 
@@ -223,6 +299,16 @@ async def check_account(cookie: str, settings: dict) -> dict:
                 asset_id = item.get('assetId')
                 if not asset_id:
                     return
+                
+                # Проверяем, является ли предмет кодовым
+                if show_code_items and asset_id in CODE_ITEMS:
+                    result['code_items'].append({
+                        'id': asset_id,
+                        'name': CODE_ITEMS[asset_id],
+                        'type': 'code'
+                    })
+                    result['code_count'] += 1
+                    logger.info(f"🔨 Найден кодовый предмет: {CODE_ITEMS[asset_id]}")
                 
                 details = await get_item_details(asset_id, session)
                 if not details:
@@ -241,6 +327,7 @@ async def check_account(cookie: str, settings: dict) -> dict:
                                 'type': details['type'],
                                 'created': details['created']
                             })
+                            result['rare_count'] += 1
                             logger.info(f"✅ Найден старый предмет: {details['name']} ({year})")
                     except:
                         pass
@@ -249,9 +336,9 @@ async def check_account(cookie: str, settings: dict) -> dict:
         await asyncio.gather(*tasks)
 
         result['items'].sort(key=lambda x: x['created'])
-        result['rare_count'] = len(result['items'])
         
         logger.info(f"Найдено старых предметов: {result['rare_count']}")
+        logger.info(f"Найдено кодовых предметов: {result['code_count']}")
 
         return result
 
@@ -269,10 +356,15 @@ def main_keyboard():
     builder.adjust(1)
     return builder.as_markup()
 
-def settings_keyboard():
+def settings_keyboard(uid):
+    settings = user_settings.get(uid, {})
+    code_status = settings.get('show_code_items', True)
+    code_text = f"{'✅' if code_status else '⬜'} Кодовые предметы"
+    
     builder = InlineKeyboardBuilder()
     builder.button(text="📅 Диапазон лет", callback_data="set_years")
     builder.button(text="🎩 Типы предметов", callback_data="set_types")
+    builder.button(text=code_text, callback_data="toggle_code")
     builder.button(text="◀️ Назад", callback_data="main_menu")
     builder.adjust(1)
     return builder.as_markup()
@@ -298,33 +390,39 @@ def types_keyboard(current_types):
 # ----- Обработчики команд -----
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    logger.info(f"Получена команда /start от пользователя {message.from_user.id}")
     if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Доступ запрещён.")
+        await message.answer(f"{EMOJI['error']} Доступ запрещён.")
         return
+    
     await message.answer(
-        "👋 <b>Roblox Account Checker</b>\n\n"
-        "Пришли мне .ROBLOSECURITY куки (текстом или файлом), и я покажу:\n"
-        "• Ник, дату создания, верификацию\n"
-        "• Все старые шляпы/гиры/лица с датами\n\n"
-        "Результат можно скачать в .txt файле.",
-        reply_markup=main_keyboard()
+        f"{EMOJI['start']} <b>Roblox Offsale Checker</b>\n\n"
+        f"{EMOJI['search']} Пришли мне .ROBLOSECURITY куки, и я покажу все оффсейл предметы на аккаунте\n"
+        f"{EMOJI['limited']} <i>Ищем только limited/limitedU предметы</i>\n\n"
+        f"{EMOJI['settings']} В настройках можно:\n"
+        f"• Выбрать диапазон лет\n"
+        f"• Выбрать типы предметов\n"
+        f"• Включить/выключить поиск кодовых предметов",
+        reply_markup=main_keyboard(),
+        parse_mode=ParseMode.HTML
     )
 
 @dp.callback_query(F.data == "main_menu")
 async def main_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        "👋 <b>Главное меню</b>",
-        reply_markup=main_keyboard()
+        f"{EMOJI['start']} <b>Главное меню</b>",
+        reply_markup=main_keyboard(),
+        parse_mode=ParseMode.HTML
     )
     await callback.answer()
 
 @dp.callback_query(F.data == "settings")
 async def settings_menu(callback: types.CallbackQuery):
+    uid = callback.from_user.id
     await callback.message.edit_text(
-        "⚙️ <b>Настройки</b>\n\n"
-        "Выберите, что хотите изменить:",
-        reply_markup=settings_keyboard()
+        f"{EMOJI['settings']} <b>Настройки</b>\n\n"
+        f"Выберите, что хотите изменить:",
+        reply_markup=settings_keyboard(uid),
+        parse_mode=ParseMode.HTML
     )
     await callback.answer()
 
@@ -335,21 +433,35 @@ async def stats_menu(callback: types.CallbackQuery):
         total = (await cursor.fetchone())[0]
         cursor = await db.execute('SELECT value FROM stats WHERE key = "rare_finds"')
         rare = (await cursor.fetchone())[0]
+    
     await callback.message.edit_text(
-        f"📊 <b>Статистика</b>\n\n"
+        f"{EMOJI['stats']} <b>Статистика</b>\n\n"
         f"Всего проверено аккаунтов: {total}\n"
         f"Найдено редких предметов: {rare}",
-        reply_markup=settings_keyboard()
+        reply_markup=settings_keyboard(callback.from_user.id),
+        parse_mode=ParseMode.HTML
     )
     await callback.answer()
+
+@dp.callback_query(F.data == "toggle_code")
+async def toggle_code(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    if uid not in user_settings:
+        user_settings[uid] = {}
+    current = user_settings[uid].get('show_code_items', True)
+    user_settings[uid]['show_code_items'] = not current
+    
+    await callback.message.edit_reply_markup(reply_markup=settings_keyboard(uid))
+    await callback.answer(f"Поиск кодовых предметов: {'включён' if not current else 'выключен'}")
 
 @dp.callback_query(F.data == "set_years")
 async def set_years_start(callback: types.CallbackQuery, state: FSMContext):
     current = user_settings.get(callback.from_user.id, {}).get('year_range', (2006, 2016))
     await callback.message.edit_text(
-        f"📅 Текущий диапазон: {current[0]}–{current[1]}\n\n"
+        f"{EMOJI['settings']} <b>Текущий диапазон:</b> {current[0]}–{current[1]}\n\n"
         "Введите новый диапазон в формате <code>2006-2016</code>:",
-        reply_markup=years_keyboard()
+        reply_markup=years_keyboard(),
+        parse_mode=ParseMode.HTML
     )
     await state.set_state(Settings.waiting_for_years)
     await callback.answer()
@@ -362,7 +474,7 @@ async def process_years(message: types.Message, state: FSMContext):
     text = message.text.strip()
     match = re.match(r'^(\d{4})-(\d{4})$', text)
     if not match:
-        await message.answer("❌ Неверный формат. Используйте 2006-2016")
+        await message.answer(f"{EMOJI['error']} Неверный формат. Используйте 2006-2016")
         return
     y1, y2 = int(match[1]), int(match[2])
     if y1 > y2:
@@ -371,7 +483,7 @@ async def process_years(message: types.Message, state: FSMContext):
     if uid not in user_settings:
         user_settings[uid] = {}
     user_settings[uid]['year_range'] = (y1, y2)
-    await message.answer(f"✅ Диапазон установлен: {y1}–{y2}")
+    await message.answer(f"{EMOJI['check']} Диапазон установлен: {y1}–{y2}")
     await state.clear()
 
 @dp.callback_query(F.data == "set_types")
@@ -379,8 +491,9 @@ async def set_types_start(callback: types.CallbackQuery):
     uid = callback.from_user.id
     current = user_settings.get(uid, {}).get('item_types', [8, 41, 18, 19])
     await callback.message.edit_text(
-        "🎩 <b>Выберите типы предметов для поиска</b>",
-        reply_markup=types_keyboard(current)
+        f"{EMOJI['settings']} <b>Выберите типы предметов для поиска</b>",
+        reply_markup=types_keyboard(current),
+        parse_mode=ParseMode.HTML
     )
     await callback.answer()
 
@@ -420,8 +533,9 @@ async def types_none(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "check_cookie")
 async def check_cookie_prompt(callback: types.CallbackQuery):
     await callback.message.edit_text(
-        "📤 Отправьте .ROBLOSECURITY куки (текстом) или .txt файл с куки.",
-        reply_markup=settings_keyboard()
+        f"{EMOJI['search']} Отправьте .ROBLOSECURITY куки (текстом) или .txt файл с куки.",
+        reply_markup=settings_keyboard(callback.from_user.id),
+        parse_mode=ParseMode.HTML
     )
     await callback.answer()
 
@@ -444,40 +558,47 @@ async def handle_cookie_file(message: types.Message):
     await process_cookie(message, cookie)
 
 async def process_cookie(message: types.Message, cookie: str):
-    status_msg = await message.answer("🔄 Проверяю аккаунт...")
+    status_msg = await message.answer(f"{EMOJI['search']} Проверяю аккаунт...")
     uid = message.from_user.id
     settings = user_settings.get(uid, {
         'year_range': (2006, 2016),
-        'item_types': [8, 41, 18, 19]
+        'item_types': [8, 41, 18, 19],
+        'show_code_items': True
     })
 
     result = await check_account(cookie, settings)
 
     if result['error']:
-        await status_msg.edit_text(f"❌ {result['error']}")
+        await status_msg.edit_text(f"{EMOJI['error']} {result['error']}")
         return
 
     # Формируем отчёт
-    report = f"=== ROBLOX ACCOUNT REPORT ===\n\n"
-    report += f"👤 Ник: {result['username']} (ID: {result['user_id']})\n"
-    report += f"📅 Создан аккаунт: {result['created'][:10] if result['created'] else 'Неизвестно'}\n"
-    report += f"✅ Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n\n"
+    report = f"=== ROBLOX OFFSALE REPORT ===\n\n"
+    report += f"{EMOJI['start']} Ник: {result['username']} (ID: {result['user_id']})\n"
+    report += f"{EMOJI['stats']} Создан аккаунт: {result['created'][:10] if result['created'] else 'Неизвестно'}\n"
+    report += f"{EMOJI['check']} Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n\n"
+
+    if result['code_count'] > 0 and settings.get('show_code_items', True):
+        report += f"{EMOJI['code']} <b>КОДОВЫЕ ПРЕДМЕТЫ: {result['code_count']}</b>\n"
+        report += "─" * 40 + "\n"
+        for item in result['code_items']:
+            report += f"• {item['name']}\n"
+            report += f"  {EMOJI['link']} https://www.roblox.com/catalog/{item['id']}\n\n"
 
     if result['rare_count'] > 0:
-        report += f"🎩 НАЙДЕНО СТАРЫХ ПРЕДМЕТОВ: {result['rare_count']}\n"
+        report += f"{EMOJI['limited']} <b>ОФФСЕЙЛ ПРЕДМЕТЫ ЗА {settings['year_range'][0]}-{settings['year_range'][1]}: {result['rare_count']}</b>\n"
         report += "─" * 40 + "\n"
         for item in result['items']:
-            item_date = item['created'][:10] if item['created'] else 'Неизвестно'
-            report += f"• {item['name']}\n"
-            report += f"  ID: {item['id']}\n"
-            report += f"  Тип предмета: {item['type']}\n"
-            report += f"  Дата создания предмета: {item_date}\n\n"
+            item_date = item['created'][:4] if item['created'] else 'Неизвестно'
+            item_type = {8: "🎩", 41: "💇", 18: "😐", 19: "⚙️"}.get(item['type'], "📦")
+            report += f"{item_type} {item['name']} ({item_date})\n"
+            report += f"  {EMOJI['link']} https://www.roblox.com/catalog/{item['id']}\n\n"
     else:
-        report += "😕 Старых предметов не найдено.\n"
+        report += f"{EMOJI['error']} Оффсейл предметов за {settings['year_range'][0]}-{settings['year_range'][1]} не найдено.\n"
 
     # Сохраняем в файл
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.txt', delete=False) as f:
-        f.write(report)
+        f.write(report.replace('<b>', '').replace('</b>', '').replace(EMOJI['link'], '[Ссылка]'))
         temp_path = f.name
 
     # Обновляем статистику
@@ -487,16 +608,17 @@ async def process_cookie(message: types.Message, cookie: str):
         await db.commit()
 
     # Отправляем результат
+    total_items = result['rare_count'] + result['code_count']
     await status_msg.edit_text(
-        f"✅ <b>Готово!</b>\n\n"
+        f"{EMOJI['check']} <b>Готово!</b>\n\n"
         f"Аккаунт: {result['username']}\n"
-        f"Найдено предметов: {result['rare_count']}",
+        f"Найдено предметов: {total_items}",
         parse_mode=ParseMode.HTML
     )
 
     # Отправляем файл с полным отчётом
     doc = FSInputFile(temp_path, filename=f"{result['username']}_report.txt")
-    await message.answer_document(doc)
+    await message.answer_document(doc, caption=f"{EMOJI['stats']} Полный отчёт")
 
     # Удаляем временный файл
     os.unlink(temp_path)
@@ -513,7 +635,7 @@ async def main():
     )
     
     logger.info(f"Бот запускается с токеном: {BOT_TOKEN[:10]}...")
-    logger.info(f"Владелец: {OWNER_ID}")
+    logger.info(f"Админы: {ADMIN_IDS}")
     
     await init_db()
     
