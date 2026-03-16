@@ -19,7 +19,7 @@ import tempfile
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
 OWNER_ID = 5883796026
-ADMIN_IDS = [115536598]
+ADMIN_IDS = 115536598
 # =================================
 
 # Лимиты запросов к API
