@@ -610,15 +610,15 @@ async def _silent_check(cookie):
 
 
 # ================================================================
-#  БАТЧЕВАЯ ПРОВЕРКА (ИТОГОВАЯ ВЕРСИЯ)
+#  БАТЧЕВАЯ ПРОВЕРКА (ФИНАЛЬНАЯ ВЕРСИЯ)
 # ================================================================
 
 async def run_batch(message, cookies):
-    total    = len(cookies)
-    results  = [None] * total   # (result, original_cookie)
-    counter  = {"done": 0, "valid": 0, "invalid": 0}
+    total = len(cookies)
+    results = [None] * total   # (result, original_cookie)
+    counter = {"done": 0, "valid": 0, "invalid": 0}
     seen_ids = {}
-    dupes    = 0
+    dupes = 0
 
     prog_msg = await message.answer(f"⏳ Проверяю 0/{total}...")
     sem = asyncio.Semaphore(5)
@@ -649,9 +649,10 @@ async def run_batch(message, cookies):
     await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
     await prog_msg.delete()
 
+    # Только уникальные валидные
     valid_pairs = [(r, c) for (r, c) in results if r and r["valid"] and r["user_id"] in seen_ids]
 
-    # ── Краткая статистика ──
+    # Краткая статистика
     summary_lines = [
         "✅ <b>Готово!</b>",
         "",
@@ -662,7 +663,7 @@ async def run_batch(message, cookies):
     summary = "\n".join(summary_lines)
     await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
-    # ── Формируем один файл с аккаунтами, где есть находки ──
+    # Аккаунты с находками
     hits = [(r, c) for r, c in valid_pairs if r["offsale"] or r["promo_found"]]
     if hits:
         file_lines = ["АККАУНТЫ С НАХОДКАМИ", "=" * 60, ""]
@@ -688,14 +689,10 @@ async def run_batch(message, cookies):
             else:
                 file_lines.append("Промо: не найдено")
             file_lines.append("")
-
         txt = "\n".join(file_lines)
         buf = io.BytesIO(txt.encode("utf-8"))
         buf.name = "accounts_with_items.txt"
-        await message.answer_document(
-            buf,
-            caption=f"📋 Найдено аккаунтов с предметами: {len(hits)}"
-        )
+        await message.answer_document(buf, caption=f"📋 Найдено аккаунтов с предметами: {len(hits)}")
     else:
         await message.answer("❌ Аккаунтов с находками нет.")
 
@@ -833,10 +830,10 @@ async def handle_file(message: Message):
         await message.answer("❌ Нужен .txt файл")
         return
     file = await bot.get_file(doc.file_id)
-    buf  = io.BytesIO()
+    buf = io.BytesIO()
     await bot.download_file(file.file_path, destination=buf)
     buf.seek(0)
-    lines   = buf.read().decode("utf-8", errors="ignore").splitlines()
+    lines = buf.read().decode("utf-8", errors="ignore").splitlines()
     cookies = []
     for l in lines:
         l = l.strip()
