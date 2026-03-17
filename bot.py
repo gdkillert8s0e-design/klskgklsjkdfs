@@ -610,25 +610,30 @@ async def _silent_check(cookie):
 
 
 # ================================================================
-#  БАТЧЕВАЯ ПРОВЕРКА (НЕСКОЛЬКО КУК)
+#  БАТЧЕВАЯ ПРОВЕРКА (НОВАЯ ВЕРСИЯ)
 # ================================================================
 
 async def run_batch(message, cookies):
-    total = len(cookies)
-    results = [None] * total
-    counter = {"done": 0, "valid": 0, "invalid": 0}
+    """
+    Проверяет список куков параллельно (макс 5 одновременно).
+    В конце шлёт итоговый отчёт + файл.
+    """
+    import re
+
+    total    = len(cookies)
+    results  = [None] * total   # (result, original_cookie)
+    counter  = {"done": 0, "valid": 0, "invalid": 0}
     seen_ids = {}
-    dupes = 0
+    dupes    = 0
 
     prog_msg = await message.answer("⏳ Проверяю 0/{}...".format(total))
     sem = asyncio.Semaphore(5)
 
-    async def worker(i, raw_cookie):
+    async def worker(i, cookie):
         nonlocal dupes
         async with sem:
-            cleaned = clean_cookie(raw_cookie)
-            r = await _silent_check(cleaned)
-            results[i] = (raw_cookie, r)   # сохраняем исходную куку вместе с результатом
+            r = await _silent_check(cookie)
+            results[i] = (r, cookie)
             counter["done"] += 1
             if r["valid"]:
                 counter["valid"] += 1
@@ -653,17 +658,23 @@ async def run_batch(message, cookies):
     await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
     await prog_msg.delete()
 
-    valid_results = [(cookie, r) for cookie, r in results if r and r["valid"]]
+    # Только уникальные валидные
+    valid_pairs = [(r, c) for (r, c) in results if r and r["valid"] and r["user_id"] in seen_ids]
 
-    # ── Статистика ──
+    # Топ оффсейл
     item_count = {}
-    for _, r in valid_results:
+    for r, _ in valid_pairs:
         for it in r["offsale"]:
             key = (it["id"], it["name"])
             item_count[key] = item_count.get(key, 0) + 1
-
     top_items = sorted(item_count.items(), key=lambda x: -x[1])[:15]
 
+    accs_with_offsale  = sum(1 for r, _ in valid_pairs if r["offsale"])
+    accs_with_promo    = sum(1 for r, _ in valid_pairs if r["promo_found"])
+    total_offsale_hits = sum(len(r["offsale"]) for r, _ in valid_pairs)
+    total_promo_hits   = sum(len(r["promo_found"]) for r, _ in valid_pairs)
+
+    # ── Итоговое сообщение ──
     summary_lines = [
         "📊 <b>Итоги проверки</b>",
         "",
@@ -672,16 +683,8 @@ async def run_batch(message, cookies):
         "❌ Невалидных: <b>{}</b>".format(counter["invalid"]),
         "👥 Дубликатов: <b>{}</b>".format(dupes),
         "",
-    ]
-
-    accs_with_offsale  = sum(1 for _, r in valid_results if r["offsale"])
-    accs_with_promo    = sum(1 for _, r in valid_results if r["promo_found"])
-    total_offsale_hits = sum(len(r["offsale"]) for _, r in valid_results)
-    total_promo_hits   = sum(len(r["promo_found"]) for _, r in valid_results)
-
-    summary_lines += [
-        "🛑 Аккаунтов с оффсейл: <b>{}</b> ({} предметов)".format(accs_with_offsale, total_offsale_hits),
-        "🎁 Аккаунтов с промо: <b>{}</b> ({} предметов)".format(accs_with_promo, total_promo_hits),
+        "🛑 Аккаунтов с оффсейл: <b>{}</b> ({} предм.)".format(accs_with_offsale, total_offsale_hits),
+        "🎁 Аккаунтов с промо: <b>{}</b> ({} предм.)".format(accs_with_promo, total_promo_hits),
     ]
 
     if top_items:
@@ -691,44 +694,89 @@ async def run_batch(message, cookies):
                 '  • <a href="https://www.roblox.com/catalog/{}">{}</a> — {} акк.'.format(iid, name, cnt)
             )
 
-    summary = "\n".join(summary_lines)
-    await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
-
-    # ── Детальный отчёт по аккаунтам с предметами ──
-    detailed_parts = []
-    for cookie, r in valid_results:
-        if not r["offsale"] and not r["promo_found"]:
-            continue
-        uid = r["user_id"]
-        uname = r["username"]
-        lines = []
-        lines.append(f'👤 <a href="https://www.roblox.com/users/{uid}/profile">{uname}</a> (ID: {uid})')
-        lines.append("📋 Найденные предметы:")
-        if r["offsale"]:
-            lines.append("🛑 Оффсейл:")
-            for it in sorted(r["offsale"], key=lambda x: x["year"] or 9999):
-                lines.append(
-                    f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a> ({it["year"]})'
-                )
-        if r["promo_found"]:
-            lines.append("🎁 Промо:")
-            for it in r["promo_found"]:
-                lines.append(
-                    f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>'
-                )
-        lines.append(f"<code>{cookie}</code>")
-        lines.append("-----------------------------------------------------------------------------------------------------")
-        detailed_parts.append("\n".join(lines))
-
-    if detailed_parts:
-        full_detailed = "\n\n".join(detailed_parts)
-        # Разбиваем на части по 3500 символов
-        for i in range(0, len(full_detailed), 3500):
-            await message.answer(
-                full_detailed[i:i+3500],
-                link_preview_options=LinkPreviewOptions(is_disabled=True),
-                parse_mode="HTML"
+    # ── Аккаунты с находками ──
+    hits = [(r, c) for r, c in valid_pairs if r["offsale"] or r["promo_found"]]
+    if hits:
+        summary_lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                          "📋 <b>Аккаунты с находками:</b>"]
+        for r, cookie in hits:
+            uid   = r["user_id"]
+            uname = r["username"]
+            summary_lines.append("")
+            summary_lines.append(
+                '👤 <a href="https://www.roblox.com/users/{}/profile">{}</a>'.format(uid, uname)
             )
+            if r["offsale"]:
+                summary_lines.append("  🛑 Оффсейл ({} шт.):".format(len(r["offsale"])))
+                for it in r["offsale"]:
+                    badge = " 🔴U" if it["unique"] else (" 🟡L" if it["limited"] else "")
+                    summary_lines.append(
+                        '    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
+                            it["id"], it["name"], badge)
+                    )
+            if r["promo_found"]:
+                summary_lines.append("  🎁 Промо ({} шт.):".format(len(r["promo_found"])))
+                for it in r["promo_found"]:
+                    summary_lines.append(
+                        '    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
+                            it["id"], it["name"])
+                    )
+            summary_lines.append("  🍪 <code>{}</code>".format(cookie))
+
+    summary = "\n".join(summary_lines)
+
+    # Telegram лимит 4096 — если больше шлём файлом
+    if len(summary) <= 4000:
+        await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
+    else:
+        # Шлём краткую статистику в чат
+        short = "\n".join(summary_lines[:summary_lines.index("━━━━━━━━━━━━━━━━━━━━━━━━━━━")])
+        await message.answer(short + "\n\n<i>Полный отчёт с аккаунтами — в файле ниже</i>",
+                             link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+    # ── Всегда шлём txt файл ──
+    if valid_pairs:
+        file_lines = [
+            "ОТЧЁТ ПРОВЕРКИ",
+            "=" * 60,
+            "Всего: {} | Валид: {} | Невалид: {} | Дубли: {}".format(
+                total, counter["valid"], counter["invalid"], dupes),
+            "",
+        ]
+
+        for r, cookie in valid_pairs:
+            uid, uname = r["user_id"], r["username"]
+            file_lines.append("=" * 60)
+            file_lines.append("Аккаунт: {} (ID: {})".format(uname, uid))
+            file_lines.append("Ссылка: https://www.roblox.com/users/{}/profile".format(uid))
+            file_lines.append("Куки: {}".format(cookie))
+            file_lines.append("")
+            if r["offsale"]:
+                file_lines.append("ОФФСЕЙЛ ({} шт.):".format(len(r["offsale"])))
+                for it in r["offsale"]:
+                    badge = " [LimitedU]" if it["unique"] else (" [Limited]" if it["limited"] else "")
+                    file_lines.append("  {} ({}) — https://www.roblox.com/catalog/{}{}".format(
+                        it["name"], it["year"] or "?", it["id"], badge))
+            else:
+                file_lines.append("Оффсейл: не найдено")
+            file_lines.append("")
+            if r["promo_found"]:
+                file_lines.append("ПРОМО ({} шт.):".format(len(r["promo_found"])))
+                for it in r["promo_found"]:
+                    file_lines.append("  {} — https://www.roblox.com/catalog/{}".format(
+                        it["name"], it["id"]))
+            else:
+                file_lines.append("Промо: не найдено")
+            file_lines.append("")
+
+        txt = "\n".join(file_lines)
+        buf = io.BytesIO(txt.encode("utf-8"))
+        buf.name = "report_{}_accs.txt".format(len(valid_pairs))
+        await message.answer_document(
+            buf,
+            caption="📋 {} валидных аккаунтов | {} с находками".format(
+                len(valid_pairs), len(hits))
+        )
 
 
 # ================================================================
