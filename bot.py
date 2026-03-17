@@ -524,38 +524,28 @@ def build_report(result):
         ),
         "",
     ]
-
-    detail_lines = []
     if offsale:
-        detail_lines.append("🛑 <b>Оффсейл — {} шт.:</b>".format(len(offsale)))
+        lines.append("🛑 <b>Оффсейл — {} шт.:</b>".format(len(offsale)))
         by_year = {}
         for it in sorted(offsale, key=lambda x: x["year"] or 9999):
             by_year.setdefault(it["year"] or 0, []).append(it)
         for year in sorted(by_year):
-            detail_lines.append("\n  📆 <b>{}:</b>".format(year or "Год неизвестен"))
+            lines.append("\n  📆 <b>{}:</b>".format(year or "Год неизвестен"))
             for it in by_year[year]:
                 badge = " 🔴LimitedU" if it["unique"] else (" 🟡Limited" if it["limited"] else "")
-                detail_lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
+                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
                     it["id"], it["name"], badge))
     else:
-        detail_lines.append("🛑 Оффсейл предметов <b>не найдено</b>")
-
-    detail_lines.append("")
+        lines.append("🛑 Оффсейл предметов <b>не найдено</b>")
+    lines.append("")
     if settings["check_promo"]:
         if promo:
-            detail_lines.append("🎁 <b>Промо — {} шт.:</b>".format(len(promo)))
+            lines.append("🎁 <b>Промо — {} шт.:</b>".format(len(promo)))
             for it in promo:
-                detail_lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
+                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
                     it["id"], it["name"]))
         else:
-            detail_lines.append("🎁 Промо-предметов <b>не найдено</b>")
-
-    if detail_lines:
-        detail_text = "\n".join(detail_lines).rstrip()
-        lines.append("<blockquote expandable>\n" + detail_text + "\n</blockquote>")
-    else:
-        lines.extend(detail_lines)
-
+            lines.append("🎁 Промо-предметов <b>не найдено</b>")
     return "\n".join(lines)
 
 
@@ -585,8 +575,8 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
         await status_msg.edit_text("❌ <b>Невалидный cookie</b>\n\n<code>{}</code>".format(errs))
         return
     report = build_report(result)
-    # добавляем исходную куку в отчёт
-    report += f"\n\n<blockquote expandable>{cookie_original}</blockquote>"
+    # добавляем исходную куку в отчёт (без blockquote)
+    report += f"\n\n<code>{cookie_original}</code>"
     if len(report) > 3800:
         await status_msg.delete()
         buf = io.BytesIO(report.encode("utf-8"))
@@ -726,13 +716,13 @@ async def run_batch(message, cookies):
                 lines.append(
                     f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>'
                 )
-        lines.append(f"<blockquote expandable>{cookie}</blockquote>")
+        lines.append(f"<code>{cookie}</code>")
         lines.append("-----------------------------------------------------------------------------------------------------")
         detailed_parts.append("\n".join(lines))
 
     if detailed_parts:
         full_detailed = "\n\n".join(detailed_parts)
-        # Разбиваем на части по 3500 символов (чтобы не превысить лимит)
+        # Разбиваем на части по 3500 символов
         for i in range(0, len(full_detailed), 3500):
             await message.answer(
                 full_detailed[i:i+3500],
