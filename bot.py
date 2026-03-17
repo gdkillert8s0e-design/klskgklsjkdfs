@@ -507,7 +507,7 @@ async def check_account(cookie, status_msg):
 
 
 # ================================================================
-#  ОТЧЁТ (с expandable blockquote)
+#  ОТЧЁТ (для одиночной проверки)
 # ================================================================
 
 def build_report(result):
@@ -525,7 +525,6 @@ def build_report(result):
         "",
     ]
 
-    # Детальная часть (оффсейл + промо)
     detail_lines = []
     if offsale:
         detail_lines.append("🛑 <b>Оффсейл — {} шт.:</b>".format(len(offsale)))
@@ -551,7 +550,6 @@ def build_report(result):
         else:
             detail_lines.append("🎁 Промо-предметов <b>не найдено</b>")
 
-    # Если есть детали, оборачиваем их в expandable blockquote
     if detail_lines:
         detail_text = "\n".join(detail_lines).rstrip()
         lines.append("<blockquote expandable>\n" + detail_text + "\n</blockquote>")
@@ -561,20 +559,24 @@ def build_report(result):
     return "\n".join(lines)
 
 
+# ================================================================
+#  ОДИНОЧНАЯ ПРОВЕРКА
+# ================================================================
+
 async def run_check(message, cookie, show_debug=False):
-    cookie = clean_cookie(cookie)
-    if len(cookie) < 50:
-        await message.answer("❌ Cookie слишком короткий ({} симв.)".format(len(cookie)))
+    cookie_original = cookie  # сохраняем исходную для отчёта
+    cookie_cleaned = clean_cookie(cookie)  # для работы используем очищенную
+    if len(cookie_cleaned) < 50:
+        await message.answer("❌ Cookie слишком короткий ({} симв.)".format(len(cookie_cleaned)))
         return
     async with CHECK_SEMAPHORE:
-        await _do_check(message, cookie, show_debug)
+        await _do_check(message, cookie_original, cookie_cleaned, show_debug)
 
 
-async def _do_check(message, cookie, show_debug=False):
-    """Одиночная проверка — сразу шлёт отчёт в чат."""
+async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
     status_msg = await message.answer("⏳ <b>Авторизация...</b>")
     try:
-        result = await check_account(cookie, status_msg)
+        result = await check_account(cookie_cleaned, status_msg)
     except Exception as e:
         await status_msg.edit_text("❌ Ошибка:\n<code>{}</code>".format(e))
         return
@@ -583,6 +585,8 @@ async def _do_check(message, cookie, show_debug=False):
         await status_msg.edit_text("❌ <b>Невалидный cookie</b>\n\n<code>{}</code>".format(errs))
         return
     report = build_report(result)
+    # добавляем исходную куку в отчёт
+    report += f"\n\n<blockquote expandable>{cookie_original}</blockquote>"
     if len(report) > 3800:
         await status_msg.delete()
         buf = io.BytesIO(report.encode("utf-8"))
@@ -600,8 +604,11 @@ async def _do_check(message, cookie, show_debug=False):
             await message.answer_document(buf2, caption="🛠 Лог")
 
 
+# ================================================================
+#  ТИХАЯ ПРОВЕРКА (ДЛЯ БАТЧА)
+# ================================================================
+
 async def _silent_check(cookie):
-    """Тихая проверка для батча — возвращает result без отправки сообщений."""
     class FakeMsg:
         async def edit_text(self, *a, **kw): pass
     try:
@@ -612,27 +619,26 @@ async def _silent_check(cookie):
                 "inv_opened": False, "debug": []}
 
 
+# ================================================================
+#  БАТЧЕВАЯ ПРОВЕРКА (НЕСКОЛЬКО КУК)
+# ================================================================
+
 async def run_batch(message, cookies):
-    """
-    Проверяет список куков параллельно (макс 5 одновременно).
-    В конце шлёт итоговый отчёт + файл со всеми деталями.
-    """
-    total     = len(cookies)
-    results   = [None] * total
-    counter   = {"done": 0, "valid": 0, "invalid": 0}
-    seen_ids  = {}   # user_id -> первый индекс
-    dupes     = 0
+    total = len(cookies)
+    results = [None] * total
+    counter = {"done": 0, "valid": 0, "invalid": 0}
+    seen_ids = {}
+    dupes = 0
 
-    # Прогресс-сообщение
-    prog_msg  = await message.answer("⏳ Проверяю 0/{}...".format(total))
-
+    prog_msg = await message.answer("⏳ Проверяю 0/{}...".format(total))
     sem = asyncio.Semaphore(5)
 
-    async def worker(i, cookie):
+    async def worker(i, raw_cookie):
         nonlocal dupes
         async with sem:
-            r = await _silent_check(cookie)
-            results[i] = r
+            cleaned = clean_cookie(raw_cookie)
+            r = await _silent_check(cleaned)
+            results[i] = (raw_cookie, r)   # сохраняем исходную куку вместе с результатом
             counter["done"] += 1
             if r["valid"]:
                 counter["valid"] += 1
@@ -643,7 +649,6 @@ async def run_batch(message, cookies):
                     seen_ids[uid] = i
             else:
                 counter["invalid"] += 1
-            # Обновляем прогресс каждые 5
             if counter["done"] % 5 == 0 or counter["done"] == total:
                 try:
                     await prog_msg.edit_text(
@@ -658,19 +663,17 @@ async def run_batch(message, cookies):
     await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
     await prog_msg.delete()
 
-    # ── Собираем статистику по всем аккаунтам ──
-    valid_results = [r for r in results if r and r["valid"] and r["user_id"] in seen_ids]
+    valid_results = [(cookie, r) for cookie, r in results if r and r["valid"]]
 
-    # Топ оффсейл предметов (по частоте встречаемости)
+    # ── Статистика ──
     item_count = {}
-    for r in valid_results:
+    for _, r in valid_results:
         for it in r["offsale"]:
             key = (it["id"], it["name"])
             item_count[key] = item_count.get(key, 0) + 1
 
     top_items = sorted(item_count.items(), key=lambda x: -x[1])[:15]
 
-    # ── Итоговое сообщение ──
     summary_lines = [
         "📊 <b>Итоги проверки</b>",
         "",
@@ -681,10 +684,10 @@ async def run_batch(message, cookies):
         "",
     ]
 
-    accs_with_offsale  = sum(1 for r in valid_results if r["offsale"])
-    accs_with_promo    = sum(1 for r in valid_results if r["promo_found"])
-    total_offsale_hits = sum(len(r["offsale"]) for r in valid_results)
-    total_promo_hits   = sum(len(r["promo_found"]) for r in valid_results)
+    accs_with_offsale  = sum(1 for _, r in valid_results if r["offsale"])
+    accs_with_promo    = sum(1 for _, r in valid_results if r["promo_found"])
+    total_offsale_hits = sum(len(r["offsale"]) for _, r in valid_results)
+    total_promo_hits   = sum(len(r["promo_found"]) for _, r in valid_results)
 
     summary_lines += [
         "🛑 Аккаунтов с оффсейл: <b>{}</b> ({} предметов)".format(accs_with_offsale, total_offsale_hits),
@@ -701,29 +704,41 @@ async def run_batch(message, cookies):
     summary = "\n".join(summary_lines)
     await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
-    # ── Файл с полными отчётами всех валидных аккаунтов ──
-    if valid_results:
-        file_lines = ["ПОЛНЫЙ ОТЧЁТ ПРОВЕРКИ", "=" * 60, ""]
-        file_lines.append("Всего: {} | Валид: {} | Невалид: {} | Дубли: {}".format(
-            total, counter["valid"], counter["invalid"], dupes))
-        file_lines.append("")
+    # ── Детальный отчёт по аккаунтам с предметами ──
+    detailed_parts = []
+    for cookie, r in valid_results:
+        if not r["offsale"] and not r["promo_found"]:
+            continue
+        uid = r["user_id"]
+        uname = r["username"]
+        lines = []
+        lines.append(f'👤 <a href="https://www.roblox.com/users/{uid}/profile">{uname}</a> (ID: {uid})')
+        lines.append("📋 Найденные предметы:")
+        if r["offsale"]:
+            lines.append("🛑 Оффсейл:")
+            for it in sorted(r["offsale"], key=lambda x: x["year"] or 9999):
+                lines.append(
+                    f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a> ({it["year"]})'
+                )
+        if r["promo_found"]:
+            lines.append("🎁 Промо:")
+            for it in r["promo_found"]:
+                lines.append(
+                    f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>'
+                )
+        lines.append(f"<blockquote expandable>{cookie}</blockquote>")
+        lines.append("-----------------------------------------------------------------------------------------------------")
+        detailed_parts.append("\n".join(lines))
 
-        for r in valid_results:
-            report_text = build_report(r)
-            # Убираем HTML теги для txt файла
-            import re
-            clean = re.sub(r"<[^>]+>", "", report_text)
-            file_lines.append(clean)
-            file_lines.append("-" * 60)
-            file_lines.append("")
-
-        txt = "\n".join(file_lines)
-        buf = io.BytesIO(txt.encode("utf-8"))
-        buf.name = "report_batch_{}.txt".format(total)
-        await message.answer_document(
-            buf,
-            caption="📋 Полный отчёт — {} аккаунтов".format(len(valid_results))
-        )
+    if detailed_parts:
+        full_detailed = "\n\n".join(detailed_parts)
+        # Разбиваем на части по 3500 символов (чтобы не превысить лимит)
+        for i in range(0, len(full_detailed), 3500):
+            await message.answer(
+                full_detailed[i:i+3500],
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                parse_mode="HTML"
+            )
 
 
 # ================================================================
@@ -789,7 +804,6 @@ async def cmd_settings(message: Message):
 @dp.message(Command("debug"))
 async def cmd_debug(message: Message):
     if not is_admin(message): return
-    # Берём всё после /debug как cookie
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or len(parts[1].strip()) < 50:
         await message.answer(
