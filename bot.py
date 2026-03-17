@@ -155,13 +155,21 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.
 
 def clean_cookie(raw):
     c = raw.strip()
+
+    # Формат: "Username: xxx | ... | Cookie: _|WARNING...|_..."
+    # Извлекаем только значение после последнего "Cookie: "
+    if "Cookie: " in c:
+        c = c.split("Cookie: ")[-1].strip()
+
     # Убираем WARNING заголовок Roblox
     if "_|WARNING" in c and "--|" in c:
         c = c.split("--|", 1)[-1].strip()
+
     # Убираем префикс если есть
     for p in [".ROBLOSECURITY=", "ROBLOSECURITY="]:
         if c.lower().startswith(p.lower()):
             c = c[len(p):]
+
     return c.strip()
 
 
@@ -717,7 +725,19 @@ async def handle_file(message: Message):
     await bot.download_file(file.file_path, destination=buf)
     buf.seek(0)
     lines   = buf.read().decode("utf-8", errors="ignore").splitlines()
-    cookies = [l.strip() for l in lines if len(l.strip()) > 50]
+    cookies = []
+    for l in lines:
+        l = l.strip()
+        if not l:
+            continue
+        # Формат: "Username: ... | Cookie: _|WARNING...|_..."
+        if "Cookie: " in l:
+            val = l.split("Cookie: ")[-1].strip()
+            if len(val) > 50:
+                cookies.append(val)
+        elif len(l) > 50:
+            # Просто голый кук
+            cookies.append(l)
     if not cookies:
         await message.answer("❌ Не нашёл cookie в файле")
         return
@@ -743,7 +763,18 @@ async def handle_file(message: Message):
 async def handle_text(message: Message, state: FSMContext):
     if not is_admin(message): return
     if await state.get_state(): return
-    lines = [l.strip() for l in message.text.splitlines() if len(l.strip()) > 50]
+    raw_lines = message.text.splitlines()
+    lines = []
+    for l in raw_lines:
+        l = l.strip()
+        if not l:
+            continue
+        if "Cookie: " in l:
+            val = l.split("Cookie: ")[-1].strip()
+            if len(val) > 50:
+                lines.append(val)
+        elif len(l) > 50:
+            lines.append(l)
     if not lines:
         await message.answer("ℹ️ Отправь cookie или .txt файл\n/settings")
         return
