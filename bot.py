@@ -48,7 +48,6 @@ ASSET_TYPE_IDS = {
     "gear":     [11],
     "clothing": [12, 13],
 }
-
 ASSET_LABELS = {
     "faces":    "👤 Лица",
     "hats":     "🎩 Шапки",
@@ -61,7 +60,6 @@ ASSET_LABELS = {
     "gear":     "⚔️ Снаряжение",
     "clothing": "👕 Одежда",
 }
-
 CODE_ITEMS = {
     189934238:  "Fireman",
     4342314393: "Rainbow Squid Unicorn",
@@ -145,64 +143,220 @@ class SetYear(StatesGroup):
     from_year = State()
     to_year   = State()
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 
 # ================================================================
-#  ROBLOX API
+#  COOKIE CLEANUP — самая важная часть
 # ================================================================
 
 def clean_cookie(raw):
+    """
+    Очищает кук от мусора. Поддерживает все форматы:
+    - Полный с WARNING
+    - Уже обрезанный
+    - С префиксом .ROBLOSECURITY=
+    - С пробелами/переносами
+    """
     c = raw.strip()
-    if "_|WARNING" in c and "--|" in c:
-        c = c.split("--|", 1)[-1]
+
+    # Убираем WARNING-заголовок Roblox
+    if "_|WARNING:-DO-NOT-SHARE-THIS" in c or "_|WARNING" in c:
+        if "--|" in c:
+            c = c.split("--|", 1)[-1].strip()
+
+    # Убираем префикс если пользователь скопировал вместе с именем куки
+    prefixes = [".ROBLOSECURITY=", "ROBLOSECURITY=", ".roblosecurity="]
+    for p in prefixes:
+        if c.startswith(p):
+            c = c[len(p):]
+
     return c.strip()
 
 
-def rbx_headers(cookie):
+def make_headers(cookie):
+    """Заголовки для запросов к Roblox"""
     return {
         "Cookie":          ".ROBLOSECURITY=" + cookie,
         "User-Agent":      UA,
-        "Accept":          "application/json",
+        "Accept":          "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer":         "https://www.roblox.com/",
+        "Origin":          "https://www.roblox.com",
+        "X-Requested-With": "XMLHttpRequest",
     }
 
 
-async def get_user_info(cookie):
-    checks = [
-        ("https://users.roblox.com/v1/users/authenticated", "id",     "displayName"),
-        ("https://www.roblox.com/mobileapi/userinfo",       "UserID", "UserName"),
-    ]
-    last_err = "нет ответа"
-    for url, id_key, name_key in checks:
-        try:
-            conn = aiohttp.TCPConnector(ssl=False)
-            async with aiohttp.ClientSession(connector=conn) as s:
-                async with s.get(
-                    url,
-                    headers=rbx_headers(cookie),
-                    timeout=aiohttp.ClientTimeout(total=15),
-                    allow_redirects=True
-                ) as r:
-                    last_err = "HTTP {}".format(r.status)
-                    if r.status == 200:
-                        d    = await r.json(content_type=None)
-                        uid  = d.get(id_key)
-                        name = d.get(name_key) or d.get("name") or "?"
-                        if uid:
-                            return {"id": int(uid), "name": name, "_err": ""}
-        except Exception as e:
-            last_err = str(e)
-    return {"_err": last_err}
+def new_session():
+    """Новая сессия без SSL верификации"""
+    conn = aiohttp.TCPConnector(ssl=False, limit=10)
+    return aiohttp.ClientSession(
+        connector=conn,
+        timeout=aiohttp.ClientTimeout(total=20)
+    )
 
+
+# ================================================================
+#  АВТОРИЗАЦИЯ — 5 разных методов
+# ================================================================
+
+async def try_auth_method_1(session, cookie):
+    """users.roblox.com — основной"""
+    try:
+        async with session.get(
+            "https://users.roblox.com/v1/users/authenticated",
+            headers=make_headers(cookie)
+        ) as r:
+            if r.status == 200:
+                d = await r.json(content_type=None)
+                if d.get("id"):
+                    return {"id": int(d["id"]), "name": d.get("displayName") or d.get("name") or "?"}
+            return None, "M1 HTTP {}".format(r.status)
+    except Exception as e:
+        return None, "M1 ERR: {}".format(str(e)[:80])
+
+
+async def try_auth_method_2(session, cookie):
+    """mobileapi — запасной"""
+    try:
+        async with session.get(
+            "https://www.roblox.com/mobileapi/userinfo",
+            headers=make_headers(cookie)
+        ) as r:
+            if r.status == 200:
+                d = await r.json(content_type=None)
+                if d.get("UserID"):
+                    return {"id": int(d["UserID"]), "name": d.get("UserName") or "?"}
+            return None, "M2 HTTP {}".format(r.status)
+    except Exception as e:
+        return None, "M2 ERR: {}".format(str(e)[:80])
+
+
+async def try_auth_method_3(session, cookie):
+    """api.roblox.com — старый эндпоинт"""
+    try:
+        async with session.get(
+            "https://api.roblox.com/users/get-by-username?username=",
+            headers=make_headers(cookie)
+        ) as r:
+            # Этот метод нам не даст имя, но проверим авторизацию
+            pass
+        # Пробуем другой путь
+        async with session.get(
+            "https://www.roblox.com/game/GetCurrentUser.ashx",
+            headers=make_headers(cookie)
+        ) as r:
+            if r.status == 200:
+                text = await r.text()
+                if text and text.strip().isdigit():
+                    uid = int(text.strip())
+                    if uid > 0:
+                        return {"id": uid, "name": "User{}".format(uid)}
+            return None, "M3 HTTP {}".format(r.status)
+    except Exception as e:
+        return None, "M3 ERR: {}".format(str(e)[:80])
+
+
+async def try_auth_method_4(session, cookie):
+    """presence API — проверка через активность"""
+    try:
+        async with session.post(
+            "https://presence.roblox.com/v1/presence/users",
+            headers=make_headers(cookie),
+            json={"userIds": []}
+        ) as r:
+            # 200 или 400 — значит кук рабочий, просто нет данных
+            if r.status in (200, 400):
+                # Теперь получим ID через auth endpoint с другими заголовками
+                hdrs2 = dict(make_headers(cookie))
+                hdrs2["Accept"] = "*/*"
+                async with session.get(
+                    "https://users.roblox.com/v1/users/authenticated",
+                    headers=hdrs2
+                ) as r2:
+                    if r2.status == 200:
+                        d = await r2.json(content_type=None)
+                        if d.get("id"):
+                            return {"id": int(d["id"]), "name": d.get("displayName") or d.get("name") or "?"}
+            return None, "M4 HTTP {}".format(r.status)
+    except Exception as e:
+        return None, "M4 ERR: {}".format(str(e)[:80])
+
+
+async def try_auth_method_5(session, cookie):
+    """CookieJar метод — кук через jar а не заголовок"""
+    try:
+        jar = aiohttp.CookieJar(unsafe=True)
+        # Добавляем кук через Morsel вручную
+        import http.cookies
+        sc = http.cookies.SimpleCookie()
+        sc[".ROBLOSECURITY"] = cookie
+        sc[".ROBLOSECURITY"]["domain"] = ".roblox.com"
+        sc[".ROBLOSECURITY"]["path"]   = "/"
+        for key, morsel in sc.items():
+            jar.update_cookies(
+                {key: morsel.value},
+                response_url="https://www.roblox.com/"
+            )
+        hdrs = {
+            "User-Agent": UA,
+            "Accept":     "application/json",
+            "Referer":    "https://www.roblox.com/",
+        }
+        conn2 = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(cookie_jar=jar, connector=conn2, headers=hdrs) as s2:
+            async with s2.get(
+                "https://users.roblox.com/v1/users/authenticated",
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as r:
+                if r.status == 200:
+                    d = await r.json(content_type=None)
+                    if d.get("id"):
+                        return {"id": int(d["id"]), "name": d.get("displayName") or d.get("name") or "?"}
+                return None, "M5 HTTP {}".format(r.status)
+    except Exception as e:
+        return None, "M5 ERR: {}".format(str(e)[:80])
+
+
+async def get_user_info(cookie):
+    """
+    Пробует все 5 методов авторизации.
+    Возвращает dict с id/name при успехе, или dict с _errors при неудаче.
+    """
+    errors = []
+    async with new_session() as session:
+        for method in [
+            try_auth_method_1,
+            try_auth_method_2,
+            try_auth_method_3,
+            try_auth_method_4,
+        ]:
+            res = await method(session, cookie)
+            if isinstance(res, dict) and res.get("id"):
+                return res
+            if isinstance(res, tuple):
+                errors.append(res[1])
+            await asyncio.sleep(0.3)
+
+    # Метод 5 — отдельная сессия с jar
+    res5 = await try_auth_method_5(None, cookie)
+    if isinstance(res5, dict) and res5.get("id"):
+        return res5
+    if isinstance(res5, tuple):
+        errors.append(res5[1])
+
+    return {"_errors": errors}
+
+
+# ================================================================
+#  ОСТАЛЬНЫЕ API ФУНКЦИИ
+# ================================================================
 
 async def get_csrf(cookie):
     try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
+        async with new_session() as s:
             async with s.post(
                 "https://auth.roblox.com/v2/logout",
-                headers=rbx_headers(cookie),
-                timeout=aiohttp.ClientTimeout(total=10)
+                headers=make_headers(cookie)
             ) as r:
                 return r.headers.get("x-csrf-token")
     except Exception:
@@ -215,15 +369,14 @@ async def open_inventory(cookie):
     if not csrf:
         return False
     try:
-        hdrs = dict(rbx_headers(cookie))
+        hdrs = dict(make_headers(cookie))
         hdrs["x-csrf-token"] = csrf
         hdrs["Content-Type"] = "application/json"
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
+        async with new_session() as s:
             async with s.patch(
                 "https://accountsettings.roblox.com/v1/inventory-privacy",
                 json={"inventoryPrivacy": 1},
-                headers=hdrs,
-                timeout=aiohttp.ClientTimeout(total=15)
+                headers=hdrs
             ) as r:
                 return r.status in (200, 204)
     except Exception:
@@ -234,7 +387,7 @@ async def open_inventory(cookie):
 async def fetch_inventory_type(cookie, user_id, asset_type_id):
     ids    = []
     cursor = ""
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
+    async with new_session() as s:
         while True:
             params = {"pageSize": 100, "sortOrder": "Asc"}
             if cursor:
@@ -243,8 +396,7 @@ async def fetch_inventory_type(cookie, user_id, asset_type_id):
                 async with s.get(
                     "https://inventory.roblox.com/v1/users/{}/inventory/{}".format(user_id, asset_type_id),
                     params=params,
-                    headers=rbx_headers(cookie),
-                    timeout=aiohttp.ClientTimeout(total=20)
+                    headers=make_headers(cookie)
                 ) as r:
                     if r.status in (401, 403):
                         return []
@@ -266,11 +418,10 @@ async def fetch_inventory_type(cookie, user_id, asset_type_id):
 
 async def get_asset_details(cookie, asset_id):
     try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
+        async with new_session() as s:
             async with s.get(
                 "https://economy.roblox.com/v2/assets/{}/details".format(asset_id),
-                headers=rbx_headers(cookie),
-                timeout=aiohttp.ClientTimeout(total=12)
+                headers=make_headers(cookie)
             ) as r:
                 if r.status == 200:
                     return await r.json(content_type=None)
@@ -279,13 +430,12 @@ async def get_asset_details(cookie, asset_id):
     return None
 
 
-async def check_owns_promo(cookie, user_id, asset_id):
+async def check_owns(cookie, user_id, asset_id):
     try:
-        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
+        async with new_session() as s:
             async with s.get(
                 "https://inventory.roblox.com/v1/users/{}/items/Asset/{}".format(user_id, asset_id),
-                headers=rbx_headers(cookie),
-                timeout=aiohttp.ClientTimeout(total=12)
+                headers=make_headers(cookie)
             ) as r:
                 if r.status == 200:
                     d = await r.json(content_type=None)
@@ -312,13 +462,15 @@ async def check_account(cookie, status_msg):
     }
 
     def log(msg):
-        result["debug"].append(msg)
+        result["debug"].append(str(msg))
 
     # 1. Авторизация
+    log("Пробую авторизоваться...")
     user_info = await get_user_info(cookie)
-    err = user_info.get("_err", "") if user_info else "нет ответа"
-    if err or not user_info.get("id"):
-        log("Авторизация провалилась: {}".format(err))
+
+    if "_errors" in user_info:
+        for e in user_info["_errors"]:
+            log(e)
         return result
 
     result["valid"]    = True
@@ -326,16 +478,16 @@ async def check_account(cookie, status_msg):
     result["username"] = user_info["name"]
     uid   = user_info["id"]
     uname = user_info["name"]
-    log("Вошёл как {} (ID: {})".format(uname, uid))
+    log("Вошёл: {} (ID {})".format(uname, uid))
 
     # 2. Открываем инвентарь
     await status_msg.edit_text("✅ <b>{}</b>\n🔓 Открываю инвентарь...".format(uname))
     opened = await open_inventory(cookie)
     result["inv_opened"] = opened
-    log("Открытие инвентаря: {}".format("OK" if opened else "не удалось"))
+    log("Инвентарь открыт: {}".format(opened))
     await asyncio.sleep(1.5)
 
-    # 3. Промо-предметы
+    # 3. Промо
     if settings["check_promo"]:
         promo_keys = list(CODE_ITEMS.keys())
         total_p    = len(promo_keys)
@@ -343,12 +495,12 @@ async def check_account(cookie, status_msg):
         for i, asset_id in enumerate(promo_keys):
             if i % 10 == 0:
                 try:
-                    await status_msg.edit_text("✅ <b>{}</b>\n🎁 Промо: {}/{}...".format(uname, i, total_p))
+                    await status_msg.edit_text("✅ <b>{}</b>\n🎁 Промо {}/{}...".format(uname, i, total_p))
                 except Exception:
                     pass
-            if await check_owns_promo(cookie, uid, asset_id):
+            if await check_owns(cookie, uid, asset_id):
                 result["promo_found"].append({"id": asset_id, "name": CODE_ITEMS[asset_id]})
-                log("  Промо: {}".format(CODE_ITEMS[asset_id]))
+                log("Промо: {}".format(CODE_ITEMS[asset_id]))
             await asyncio.sleep(0.2)
         log("Промо найдено: {}".format(len(result["promo_found"])))
 
@@ -360,23 +512,23 @@ async def check_account(cookie, status_msg):
             continue
         for tid in ASSET_TYPE_IDS[key]:
             items = await fetch_inventory_type(cookie, uid, tid)
-            log("Тип {} ({}): {} шт.".format(tid, key, len(items)))
+            log("Тип {} ({}): {}".format(tid, key, len(items)))
             all_ids.update(items)
             await asyncio.sleep(0.3)
 
     result["inv_total"] = len(all_ids)
-    log("Итого предметов: {}".format(len(all_ids)))
+    log("Предметов всего: {}".format(len(all_ids)))
 
     if not all_ids:
-        log("Инвентарь пустой или закрытый")
+        log("Инвентарь пустой или закрытый!")
         return result
 
-    # 5. Проверяем каждый предмет на оффсейл
+    # 5. Проверяем оффсейл
     await status_msg.edit_text("✅ <b>{}</b>\n🔍 Проверяю {} предметов...".format(uname, len(all_ids)))
-    all_ids_list = list(all_ids)
-    total        = len(all_ids_list)
+    ids_list = list(all_ids)
+    total    = len(ids_list)
 
-    for i, asset_id in enumerate(all_ids_list):
+    for i, asset_id in enumerate(ids_list):
         if i % 30 == 0:
             try:
                 await status_msg.edit_text("✅ <b>{}</b>\n🔍 {}/{}...".format(uname, i, total))
@@ -388,19 +540,19 @@ async def check_account(cookie, status_msg):
             await asyncio.sleep(0.1)
             continue
 
-        # IsForSale=False → оффсейл
+        # IsForSale=False → оффсейл (нельзя купить)
         if det.get("IsForSale", True):
             await asyncio.sleep(0.1)
             continue
 
         year = 0
-        created = det.get("Created", "")
-        if created:
-            try:
+        try:
+            created = det.get("Created", "")
+            if created:
                 dt   = datetime.fromisoformat(created.replace("Z", "+00:00"))
                 year = dt.year
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         if year and not (settings["year_from"] <= year <= settings["year_to"]):
             await asyncio.sleep(0.1)
@@ -411,13 +563,10 @@ async def check_account(cookie, status_msg):
         name       = det.get("Name") or "ID:{}".format(asset_id)
 
         result["offsale"].append({
-            "id":      asset_id,
-            "name":    name,
-            "year":    year,
-            "limited": is_limited,
-            "unique":  is_unique,
+            "id": asset_id, "name": name,
+            "year": year, "limited": is_limited, "unique": is_unique,
         })
-        log("  Оффсейл: {} ({})".format(name, year))
+        log("Оффсейл: {} ({})".format(name, year))
         await asyncio.sleep(0.1)
 
     log("Оффсейл итого: {}".format(len(result["offsale"])))
@@ -432,15 +581,13 @@ def build_report(result):
     uid, uname = result["user_id"], result["username"]
     offsale    = result["offsale"]
     promo      = result["promo_found"]
-
     lines = [
         "📋 <b>Отчёт проверки</b>",
         '👤 <a href="https://www.roblox.com/users/{}/profile">{}</a>  (ID: {})'.format(uid, uname, uid),
         "📅 Период: <b>{} – {}</b>".format(settings["year_from"], settings["year_to"]),
-        "📦 Предметов: <b>{}</b>  {} инвентарь".format(result.get("inv_total", 0), "✅" if result["inv_opened"] else "⚠️"),
+        "📦 Предметов: <b>{}</b>  {}".format(result.get("inv_total", 0), "✅" if result["inv_opened"] else "⚠️ инвентарь не открылся"),
         "",
     ]
-
     if offsale:
         lines.append("🛑 <b>Оффсейл — {} шт.:</b>".format(len(offsale)))
         by_year = {}
@@ -450,29 +597,24 @@ def build_report(result):
             lines.append("\n  📆 <b>{}:</b>".format(year or "Год неизвестен"))
             for it in by_year[year]:
                 badge = " 🔴LimitedU" if it["unique"] else (" 🟡Limited" if it["limited"] else "")
-                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
-                    it["id"], it["name"], badge))
+                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(it["id"], it["name"], badge))
     else:
         lines.append("🛑 Оффсейл предметов <b>не найдено</b>")
-
     lines.append("")
-
     if settings["check_promo"]:
         if promo:
             lines.append("🎁 <b>Промо — {} шт.:</b>".format(len(promo)))
             for it in promo:
-                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
-                    it["id"], it["name"]))
+                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(it["id"], it["name"]))
         else:
             lines.append("🎁 Промо-предметов <b>не найдено</b>")
-
     return "\n".join(lines)
 
 
 async def run_check(message, cookie, show_debug=False):
     cookie = clean_cookie(cookie)
     if len(cookie) < 50:
-        await message.answer("❌ Cookie слишком короткий.")
+        await message.answer("❌ Cookie слишком короткий ({}символов).".format(len(cookie)))
         return
 
     status_msg = await message.answer("⏳ <b>Авторизация...</b>")
@@ -483,22 +625,25 @@ async def run_check(message, cookie, show_debug=False):
         return
 
     if not result["valid"]:
-        dbg = "\n".join(result["debug"])
-        await status_msg.edit_text("❌ <b>Невалидный cookie</b>\n\n<code>{}</code>".format(dbg))
+        errs = "\n".join(result["debug"])
+        await status_msg.edit_text(
+            "❌ <b>Невалидный cookie</b>\n\n"
+            "<code>{}</code>\n\n"
+            "<i>Попробуй скопировать cookie заново из браузера</i>".format(errs)
+        )
         return
 
     report = build_report(result)
-
     if len(report) > 3800:
         await status_msg.delete()
-        buf      = io.BytesIO(report.encode("utf-8"))
+        buf = io.BytesIO(report.encode("utf-8"))
         buf.name = "report_{}.txt".format(result["user_id"])
         await message.answer_document(buf, caption="📋 {}".format(result["username"]))
     else:
         await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
     if show_debug or result["inv_total"] == 0:
-        dbg = "🛠 <b>Лог:</b>\n" + "\n".join("  <code>{}</code>".format(l) for l in result["debug"])
+        dbg = "🛠 <b>Лог:</b>\n" + "\n".join("<code>{}</code>".format(l) for l in result["debug"])
         if len(dbg) < 3800:
             await message.answer(dbg)
 
@@ -539,31 +684,25 @@ async def cmd_start(message: Message):
         "• <b>.txt файл</b> — один cookie на строку\n\n"
         "⚙️ /settings — настройки\n"
         "ℹ️ /info — текущие настройки\n"
-        "🛠 /debug [cookie] — проверка с подробным логом"
+        "🛠 /debug [cookie] — проверка с логом"
     )
-
 
 @dp.message(Command("info"))
 async def cmd_info(message: Message):
     if not is_admin(message): return
     types_on = [ASSET_LABELS[k] for k, v in settings["asset_types"].items() if v]
     await message.answer(
-        "ℹ️ <b>Текущие настройки</b>\n\n"
-        "📅 Годы: <b>{} – {}</b>\n"
-        "🎁 Промо: {}\n"
-        "📦 Типы:\n{}".format(
+        "ℹ️ <b>Текущие настройки</b>\n\n📅 Годы: <b>{} – {}</b>\n🎁 Промо: {}\n📦 Типы:\n{}".format(
             settings["year_from"], settings["year_to"],
             "✅" if settings["check_promo"] else "❌",
             "\n".join("  • {}".format(t) for t in types_on)
         )
     )
 
-
 @dp.message(Command("settings"))
 async def cmd_settings(message: Message):
     if not is_admin(message): return
     await message.answer("⚙️ <b>Настройки поиска</b>", reply_markup=settings_kb())
-
 
 @dp.message(Command("debug"))
 async def cmd_debug(message: Message):
@@ -574,7 +713,6 @@ async def cmd_debug(message: Message):
         await message.answer("Использование: /debug [cookie]")
         return
     await run_check(message, cookie, show_debug=True)
-
 
 @dp.callback_query(F.data.startswith("tog_"))
 async def cb_toggle(cb: CallbackQuery):
@@ -587,7 +725,6 @@ async def cb_toggle(cb: CallbackQuery):
     await cb.message.edit_reply_markup(reply_markup=settings_kb())
     await cb.answer("✅")
 
-
 @dp.callback_query(F.data == "set_yf")
 async def cb_yf(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb): return await cb.answer("⛔")
@@ -595,14 +732,12 @@ async def cb_yf(cb: CallbackQuery, state: FSMContext):
     await state.set_state(SetYear.from_year)
     await cb.answer()
 
-
 @dp.callback_query(F.data == "set_yt")
 async def cb_yt(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb): return await cb.answer("⛔")
     await cb.message.answer("📅 Введи конечный год (сейчас: {}):".format(settings["year_to"]))
     await state.set_state(SetYear.to_year)
     await cb.answer()
-
 
 @dp.message(SetYear.from_year)
 async def save_yf(message: Message, state: FSMContext):
@@ -615,7 +750,6 @@ async def save_yf(message: Message, state: FSMContext):
     except (ValueError, AssertionError):
         await message.answer("❌ Введи число от 2006 до 2030")
 
-
 @dp.message(SetYear.to_year)
 async def save_yt(message: Message, state: FSMContext):
     try:
@@ -627,13 +761,12 @@ async def save_yt(message: Message, state: FSMContext):
     except (ValueError, AssertionError):
         await message.answer("❌ Введи число от 2006 до 2030")
 
-
 @dp.message(F.document)
 async def handle_file(message: Message):
     if not is_admin(message): return
     doc = message.document
     if not doc.file_name.endswith(".txt"):
-        await message.answer("❌ Нужен .txt файл (один cookie на строку)")
+        await message.answer("❌ Нужен .txt файл")
         return
     file = await bot.get_file(doc.file_id)
     buf  = io.BytesIO()
@@ -654,7 +787,6 @@ async def handle_file(message: Message):
             pass
         await asyncio.sleep(1)
     await message.answer("✅ <b>Готово!</b> Проверено {} аккаунтов.".format(len(cookies)))
-
 
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
@@ -677,7 +809,6 @@ async def handle_text(message: Message, state: FSMContext):
                 pass
             await asyncio.sleep(1)
         await message.answer("✅ Готово! Проверено <b>{}</b> аккаунтов.".format(len(lines)))
-
 
 # ================================================================
 async def main():
