@@ -575,8 +575,8 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
         await status_msg.edit_text("❌ <b>Невалидный cookie</b>\n\n<code>{}</code>".format(errs))
         return
     report = build_report(result)
-    # добавляем исходную куку в отчёт (без blockquote)
-    report += f"\n\n<code>{cookie_original}</code>"
+    # добавляем исходную куку в отчёт
+    report += f"\n\n🍪 <code>{cookie_original}</code>"
     if len(report) > 3800:
         await status_msg.delete()
         buf = io.BytesIO(report.encode("utf-8"))
@@ -616,7 +616,7 @@ async def _silent_check(cookie):
 async def run_batch(message, cookies):
     """
     Проверяет список куков параллельно (макс 5 одновременно).
-    В конце шлёт итоговый отчёт + файл.
+    В конце шлёт итоговый отчёт + отдельные сообщения для аккаунтов с находками.
     """
     import re
 
@@ -697,42 +697,19 @@ async def run_batch(message, cookies):
     summary = "\n".join(summary_lines)
     await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
-    # ── Аккаунты с находками (отправляем отдельными сообщениями) ──
+    # ── Отправляем отдельные отчёты по аккаунтам с находками ──
     hits = [(r, c) for r, c in valid_pairs if r["offsale"] or r["promo_found"]]
-    if hits:
-        detailed_parts = []
-        for r, cookie in hits:
-            uid   = r["user_id"]
-            uname = r["username"]
-            lines = []
-            lines.append(f'👤 <a href="https://www.roblox.com/users/{uid}/profile">{uname}</a> (ID: {uid})')
-            lines.append("📋 Найденные предметы:")
-            if r["offsale"]:
-                lines.append("🛑 Оффсейл:")
-                for it in sorted(r["offsale"], key=lambda x: x["year"] or 9999):
-                    lines.append(
-                        f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a> ({it["year"]})'
-                    )
-            if r["promo_found"]:
-                lines.append("🎁 Промо:")
-                for it in r["promo_found"]:
-                    lines.append(
-                        f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>'
-                    )
-            lines.append(f"🍪 <code>{cookie}</code>")
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            detailed_parts.append("\n".join(lines))
+    for r, cookie in hits:
+        report = build_report(r)
+        report += f"\n\n🍪 <code>{cookie}</code>"
+        if len(report) <= 3800:
+            await message.answer(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
+        else:
+            buf = io.BytesIO(report.encode("utf-8"))
+            buf.name = "report_{}.txt".format(r["user_id"])
+            await message.answer_document(buf, caption=f"📋 {r['username']}")
 
-        if detailed_parts:
-            full_detailed = "\n\n".join(detailed_parts)
-            # Разбиваем на части по 3500 символов
-            for i in range(0, len(full_detailed), 3500):
-                await message.answer(
-                    full_detailed[i:i+3500],
-                    link_preview_options=LinkPreviewOptions(is_disabled=True),
-                    parse_mode="HTML"
-                )
-    else:
+    if not hits:
         await message.answer("❌ Аккаунтов с находками нет.")
 
     # ── Всегда шлём txt файл ──
