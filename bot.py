@@ -507,7 +507,7 @@ async def check_account(cookie, status_msg):
 
 
 # ================================================================
-#  ОТЧЁТ
+#  ОТЧЁТ (с expandable blockquote)
 # ================================================================
 
 def build_report(result):
@@ -524,28 +524,40 @@ def build_report(result):
         ),
         "",
     ]
+
+    # Детальная часть (оффсейл + промо)
+    detail_lines = []
     if offsale:
-        lines.append("🛑 <b>Оффсейл — {} шт.:</b>".format(len(offsale)))
+        detail_lines.append("🛑 <b>Оффсейл — {} шт.:</b>".format(len(offsale)))
         by_year = {}
         for it in sorted(offsale, key=lambda x: x["year"] or 9999):
             by_year.setdefault(it["year"] or 0, []).append(it)
         for year in sorted(by_year):
-            lines.append("\n  📆 <b>{}:</b>".format(year or "Год неизвестен"))
+            detail_lines.append("\n  📆 <b>{}:</b>".format(year or "Год неизвестен"))
             for it in by_year[year]:
                 badge = " 🔴LimitedU" if it["unique"] else (" 🟡Limited" if it["limited"] else "")
-                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
+                detail_lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
                     it["id"], it["name"], badge))
     else:
-        lines.append("🛑 Оффсейл предметов <b>не найдено</b>")
-    lines.append("")
+        detail_lines.append("🛑 Оффсейл предметов <b>не найдено</b>")
+
+    detail_lines.append("")
     if settings["check_promo"]:
         if promo:
-            lines.append("🎁 <b>Промо — {} шт.:</b>".format(len(promo)))
+            detail_lines.append("🎁 <b>Промо — {} шт.:</b>".format(len(promo)))
             for it in promo:
-                lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
+                detail_lines.append('    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
                     it["id"], it["name"]))
         else:
-            lines.append("🎁 Промо-предметов <b>не найдено</b>")
+            detail_lines.append("🎁 Промо-предметов <b>не найдено</b>")
+
+    # Если есть детали, оборачиваем их в expandable blockquote
+    if detail_lines:
+        detail_text = "\n".join(detail_lines).rstrip()
+        lines.append("<blockquote expandable>\n" + detail_text + "\n</blockquote>")
+    else:
+        lines.extend(detail_lines)
+
     return "\n".join(lines)
 
 
