@@ -17,31 +17,50 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ================================================================
 #  ⚙️ НАСТРОЙКИ — МЕНЯЙ ТОЛЬКО ЗДЕСЬ
 # ================================================================
-BOT_TOKEN  = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
-ADMIN_ID   = 5883796026        # Твой Telegram ID (@userinfobot)
+BOT_TOKEN   = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
+ADMIN_ID    = 5883796026   # Твой Telegram ID (узнать: @userinfobot)
 
-YEAR_FROM  = 2012             # Искать предметы созданные С этого года
-YEAR_TO    = 2024             # Искать предметы созданные ДО этого года
-CHECK_PROMO = True            # Искать промо-предметы (True/False)
+YEAR_FROM   = 2012        # Предметы созданные С этого года
+YEAR_TO     = 2024        # Предметы созданные ДО этого года
+CHECK_PROMO = True        # Искать промо-предметы
 
 ASSET_TYPES = {
-    "faces":    True,         # 👤 Лица
-    "hats":     True,         # 🎩 Шапки / Аксессуары
-    "gear":     True,         # ⚔️ Снаряжение
-    "clothing": False,        # 👕 Одежда
+    "faces":    True,     # 👤 Лица      (тип 18)
+    "hats":     True,     # 🎩 Шапки     (тип 8)
+    "hair":     True,     # 💇 Волосы     (тип 41)
+    "neck":     True,     # 📿 Шея       (тип 42)
+    "shoulder": True,     # 🦴 Плечи     (тип 45)
+    "front":    True,     # 🧣 Передние  (тип 46)
+    "back":     True,     # 🎒 Задние    (тип 47)
+    "waist":    True,     # 🩱 Пояс      (тип 43)
+    "gear":     True,     # ⚔️ Снаряжение (тип 11)
+    "clothing": False,    # 👕 Одежда    (типы 12,13)
 }
 # ================================================================
 
+# Roblox asset type IDs (по одному за запрос через v1 API)
 ASSET_TYPE_IDS = {
     "faces":    [18],
-    "hats":     [8, 41, 42, 43, 44, 45, 46, 47],
+    "hats":     [8],
+    "hair":     [41],
+    "neck":     [42],
+    "shoulder": [45],
+    "front":    [46],
+    "back":     [47],
+    "waist":    [43],
     "gear":     [11],
     "clothing": [12, 13],
 }
 
 ASSET_LABELS = {
     "faces":    "👤 Лица",
-    "hats":     "🎩 Шапки / Аксессуары",
+    "hats":     "🎩 Шапки",
+    "hair":     "💇 Волосы",
+    "neck":     "📿 Шея",
+    "shoulder": "🦴 Плечи",
+    "front":    "🧣 Передние",
+    "back":     "🎒 Задние",
+    "waist":    "🩱 Пояс",
     "gear":     "⚔️ Снаряжение",
     "clothing": "👕 Одежда",
 }
@@ -117,11 +136,8 @@ CODE_ITEMS = {
 # ================================================================
 #  ИНИЦИАЛИЗАЦИЯ
 # ================================================================
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode="HTML")
-)
-dp = Dispatcher(storage=MemoryStorage())
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp  = Dispatcher(storage=MemoryStorage())
 
 settings = {
     "year_from":   YEAR_FROM,
@@ -137,25 +153,26 @@ class SetYear(StatesGroup):
 
 
 # ================================================================
-#  ROBLOX API
+#  ROBLOX API HELPERS
 # ================================================================
-BASE_H = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
-def ch(cookie):
-    return {**BASE_H, "Cookie": f".ROBLOSECURITY={cookie}"}
+def ch(cookie: str) -> dict:
+    return {"Cookie": f".ROBLOSECURITY={cookie}", "User-Agent": UA, "Accept": "application/json"}
 
-def clean(raw):
+def clean(raw: str) -> str:
     c = raw.strip()
     if "_|WARNING" in c and "--|" in c:
         c = c.split("--|", 1)[-1]
-    return c
+    return c.strip()
 
 
-async def get_user_info(session, cookie):
+async def get_user_info(session: aiohttp.ClientSession, cookie: str) -> dict | None:
+    """Авторизация — получаем ID и имя"""
     try:
         async with session.get(
             "https://users.roblox.com/v1/users/authenticated",
-            headers=ch(cookie), timeout=aiohttp.ClientTimeout(total=12)
+            headers=ch(cookie), timeout=aiohttp.ClientTimeout(total=15)
         ) as r:
             if r.status == 200:
                 d = await r.json()
@@ -165,71 +182,126 @@ async def get_user_info(session, cookie):
     return None
 
 
-async def open_inventory(session, cookie, user_id):
-    csrf = None
+async def get_csrf_token(session: aiohttp.ClientSession, cookie: str) -> str | None:
+    """Получаем X-CSRF-Token через любой POST запрос"""
     try:
         async with session.post(
             "https://auth.roblox.com/v2/logout",
             headers=ch(cookie), timeout=aiohttp.ClientTimeout(total=10)
         ) as r:
-            csrf = r.headers.get("x-csrf-token")
-    except Exception:
-        pass
-    if not csrf:
-        return
-    try:
-        await session.post(
-            "https://accountsettings.roblox.com/v1/inventory-privacy",
-            json={"inventoryPrivacy": 1},
-            headers={**ch(cookie), "x-csrf-token": csrf, "Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=10)
-        )
-    except Exception:
-        pass
-
-
-async def get_full_inventory(session, cookie, user_id, type_ids):
-    items, cursor = [], ""
-    types_str = ",".join(map(str, type_ids))
-    while True:
-        url = (
-            f"https://inventory.roblox.com/v2/users/{user_id}/inventory"
-            f"?assetTypes={types_str}&limit=100&sortOrder=Asc"
-            + (f"&cursor={cursor}" if cursor else "")
-        )
-        try:
-            async with session.get(url, headers=ch(cookie), timeout=aiohttp.ClientTimeout(total=15)) as r:
-                if r.status != 200:
-                    break
-                data = await r.json()
-                items.extend(data.get("data", []))
-                cursor = data.get("nextPageCursor") or ""
-                if not cursor:
-                    break
-        except Exception:
-            break
-        await asyncio.sleep(0.3)
-    return items
-
-
-async def get_details(session, asset_id):
-    try:
-        async with session.get(
-            f"https://economy.roblox.com/v2/assets/{asset_id}/details",
-            headers=BASE_H, timeout=aiohttp.ClientTimeout(total=10)
-        ) as r:
-            if r.status == 200:
-                return await r.json()
+            return r.headers.get("x-csrf-token")
     except Exception:
         pass
     return None
 
 
-async def owns_item(session, cookie, user_id, asset_id):
+async def open_inventory(session: aiohttp.ClientSession, cookie: str) -> None:
+    """Открываем инвентарь на публичный (Everyone)"""
+    csrf = await get_csrf_token(session, cookie)
+    if not csrf:
+        return
+    try:
+        async with session.post(
+            "https://accountsettings.roblox.com/v1/inventory-privacy",
+            json={"inventoryPrivacy": 1},
+            headers={**ch(cookie), "x-csrf-token": csrf, "Content-Type": "application/json"},
+            timeout=aiohttp.ClientTimeout(total=12)
+        ) as r:
+            pass  # 200 или 204 — всё ок
+    except Exception:
+        pass
+
+
+async def get_inventory_by_type(
+    session: aiohttp.ClientSession,
+    cookie: str,
+    user_id: int,
+    asset_type_id: int
+) -> list:
+    """
+    Получает инвентарь по ОДНОМУ типу предмета через v1 API.
+    Возвращает список словарей с полями assetId, name и т.д.
+    """
+    items  = []
+    cursor = ""
+    url_base = f"https://inventory.roblox.com/v1/users/{user_id}/inventory/{asset_type_id}"
+
+    while True:
+        params = {"pageSize": 100, "sortOrder": "Asc"}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            async with session.get(
+                url_base, params=params,
+                headers=ch(cookie),
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as r:
+                if r.status == 403:
+                    # Инвентарь закрыт — попробуем ещё раз через 1 сек
+                    await asyncio.sleep(1)
+                    async with session.get(
+                        url_base, params=params,
+                        headers=ch(cookie),
+                        timeout=aiohttp.ClientTimeout(total=20)
+                    ) as r2:
+                        if r2.status != 200:
+                            break
+                        data   = await r2.json()
+                elif r.status != 200:
+                    break
+                else:
+                    data = await r.json()
+
+                page_items = data.get("data", [])
+                items.extend(page_items)
+                cursor = data.get("nextPageCursor") or ""
+                if not cursor:
+                    break
+        except Exception:
+            break
+        await asyncio.sleep(0.4)
+
+    return items
+
+
+async def catalog_batch_details(session: aiohttp.ClientSession, asset_ids: list[int]) -> dict:
+    """
+    Батч-запрос к catalog API — до 120 предметов за раз.
+    Возвращает {asset_id: {...details...}}
+    """
+    result = {}
+    chunk_size = 120
+
+    for i in range(0, len(asset_ids), chunk_size):
+        chunk = asset_ids[i:i + chunk_size]
+        payload = {"items": [{"itemType": "Asset", "id": aid} for aid in chunk]}
+        try:
+            async with session.post(
+                "https://catalog.roblox.com/v1/catalog/items/details",
+                json=payload,
+                headers={"Content-Type": "application/json", "User-Agent": UA, "Accept": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=20)
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for item in data.get("data", []):
+                        aid = item.get("id")
+                        if aid:
+                            result[aid] = item
+        except Exception:
+            pass
+        await asyncio.sleep(0.3)
+
+    return result
+
+
+async def owns_item(session: aiohttp.ClientSession, cookie: str, user_id: int, asset_id: int) -> bool:
+    """Проверяет владение конкретным предметом"""
     try:
         async with session.get(
             f"https://inventory.roblox.com/v1/users/{user_id}/items/Asset/{asset_id}",
-            headers=ch(cookie), timeout=aiohttp.ClientTimeout(total=10)
+            headers=ch(cookie),
+            timeout=aiohttp.ClientTimeout(total=12)
         ) as r:
             if r.status == 200:
                 d = await r.json()
@@ -239,87 +311,110 @@ async def owns_item(session, cookie, user_id, asset_id):
     return False
 
 
-async def check_cookie_full(cookie, status_msg):
-    result = {"valid": False, "user_id": None, "username": None, "offsale": [], "promo_found": []}
-
-    enabled_ids = []
-    for key, on in settings["asset_types"].items():
-        if on:
-            enabled_ids.extend(ASSET_TYPE_IDS[key])
+# ================================================================
+#  ГЛАВНАЯ ФУНКЦИЯ ПРОВЕРКИ
+# ================================================================
+async def check_cookie_full(cookie: str, status_msg: Message) -> dict:
+    result = {
+        "valid":       False,
+        "user_id":     None,
+        "username":    None,
+        "offsale":     [],
+        "promo_found": [],
+        "inv_total":   0,
+    }
 
     async with aiohttp.ClientSession() as session:
+
+        # 1. Авторизация
         user_info = await get_user_info(session, cookie)
         if not user_info:
             return result
 
         result.update({"valid": True, "user_id": user_info["id"], "username": user_info["name"]})
-        uid = user_info["id"]
+        uid   = user_info["id"]
+        uname = user_info["name"]
 
-        await status_msg.edit_text(f"✅ Вошёл как <b>{user_info['name']}</b>\n⏳ Открываю инвентарь...")
-        await open_inventory(session, cookie, uid)
-        await asyncio.sleep(0.8)
+        # 2. Открываем инвентарь
+        await status_msg.edit_text(f"✅ <b>{uname}</b>\n🔓 Открываю инвентарь...")
+        await open_inventory(session, cookie)
+        await asyncio.sleep(1)
 
-        # Промо
+        # 3. Промо-предметы (прямая проверка владения)
         if settings["check_promo"]:
-            total_promo = len(CODE_ITEMS)
+            total_p = len(CODE_ITEMS)
+            await status_msg.edit_text(f"✅ <b>{uname}</b>\n🎁 Проверяю промо (0/{total_p})...")
             for i, (asset_id, name) in enumerate(CODE_ITEMS.items()):
                 if i % 10 == 0:
                     try:
                         await status_msg.edit_text(
-                            f"✅ <b>{user_info['name']}</b>\n🎁 Промо: {i}/{total_promo}..."
+                            f"✅ <b>{uname}</b>\n🎁 Промо: {i}/{total_p}..."
                         )
                     except Exception:
                         pass
                 if await owns_item(session, cookie, uid, asset_id):
                     result["promo_found"].append({"id": asset_id, "name": name})
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(0.2)
 
-        # Инвентарь
-        if enabled_ids:
-            await status_msg.edit_text(f"✅ <b>{user_info['name']}</b>\n📦 Загружаю инвентарь...")
-            raw = await get_full_inventory(session, cookie, uid, enabled_ids)
+        # 4. Сбор инвентаря по типам
+        all_asset_ids = set()
+        enabled_type_ids = []
+        for key, on in settings["asset_types"].items():
+            if on:
+                enabled_type_ids.extend(ASSET_TYPE_IDS[key])
 
-            seen, unique = set(), []
-            for item in raw:
-                aid = item.get("assetId")
-                if aid and aid not in seen:
-                    seen.add(aid); unique.append(item)
+        if enabled_type_ids:
+            await status_msg.edit_text(f"✅ <b>{uname}</b>\n📦 Загружаю инвентарь...")
 
-            total = len(unique)
-            for i, item in enumerate(unique):
-                if i % 25 == 0:
+            for type_id in enabled_type_ids:
+                items = await get_inventory_by_type(session, cookie, uid, type_id)
+                for item in items:
+                    aid = item.get("assetId") or item.get("id")
+                    if aid:
+                        all_asset_ids.add(int(aid))
+                await asyncio.sleep(0.3)
+
+            result["inv_total"] = len(all_asset_ids)
+            await status_msg.edit_text(
+                f"✅ <b>{uname}</b>\n"
+                f"🔍 Проверяю {len(all_asset_ids)} предметов на оффсейл..."
+            )
+
+            # 5. Батч-проверка через catalog API
+            asset_id_list = list(all_asset_ids)
+            catalog_data  = await catalog_batch_details(session, asset_id_list)
+
+            for asset_id, details in catalog_data.items():
+                # priceStatus: "Off Sale" | "No Price" | "Free" | числовая цена
+                price_status = details.get("priceStatus", "")
+                is_offsale   = (price_status == "Off Sale")
+
+                if not is_offsale:
+                    continue
+
+                # Фильтр по году через поле createdUtc или itemStatus
+                year = 0
+                created_str = details.get("createdUtc") or details.get("created") or ""
+                if created_str:
                     try:
-                        await status_msg.edit_text(
-                            f"✅ <b>{user_info['name']}</b>\n🔍 {i}/{total} предметов..."
-                        )
+                        dt   = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                        year = dt.year
                     except Exception:
                         pass
-
-                asset_id = item.get("assetId")
-                if not asset_id:
-                    continue
-                details = await get_details(session, asset_id)
-                if not details or details.get("IsForSale", True):
-                    continue
-
-                year = 0
-                try:
-                    dt = datetime.fromisoformat(details.get("Created", "").replace("Z", "+00:00"))
-                    year = dt.year
-                except Exception:
-                    pass
 
                 if year and not (settings["year_from"] <= year <= settings["year_to"]):
                     continue
 
+                is_limited = "Limited" in str(details.get("itemRestrictions", []))
+                is_unique  = "LimitedUnique" in str(details.get("itemRestrictions", []))
+
                 result["offsale"].append({
                     "id":      asset_id,
-                    "name":    details.get("Name", "?"),
+                    "name":    details.get("name") or details.get("Name", "?"),
                     "year":    year,
-                    "limited": details.get("IsLimited", False),
-                    "unique":  details.get("IsLimitedUnique", False),
+                    "limited": is_limited,
+                    "unique":  is_unique,
                 })
-                await asyncio.sleep(0.1)
 
     return result
 
@@ -327,7 +422,7 @@ async def check_cookie_full(cookie, status_msg):
 # ================================================================
 #  ОТЧЁТ
 # ================================================================
-def build_report(result):
+def build_report(result: dict) -> str:
     uid, uname = result["user_id"], result["username"]
     offsale, promo = result["offsale"], result["promo_found"]
 
@@ -335,21 +430,25 @@ def build_report(result):
         "📋 <b>Отчёт проверки</b>",
         f'👤 <a href="https://www.roblox.com/users/{uid}/profile">{uname}</a>  (ID: {uid})',
         f"📅 Период: <b>{settings['year_from']} – {settings['year_to']}</b>",
+        f"📦 Предметов в инвентаре: <b>{result.get('inv_total', 0)}</b>",
         "",
     ]
 
     if offsale:
         lines.append(f"🛑 <b>Оффсейл — {len(offsale)} шт.:</b>")
-        by_year = {}
+        by_year: dict = {}
         for it in sorted(offsale, key=lambda x: x["year"] or 9999):
             by_year.setdefault(it["year"] or 0, []).append(it)
         for year in sorted(by_year):
             lines.append(f"\n  📆 <b>{year or 'Год неизвестен'}:</b>")
             for it in by_year[year]:
                 badge = " 🔴LimitedU" if it["unique"] else (" 🟡Limited" if it["limited"] else "")
-                lines.append(f'    • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>{badge}')
+                lines.append(
+                    f'    • <a href="https://www.roblox.com/catalog/{it["id"]}">'
+                    f'{it["name"]}</a>{badge}'
+                )
     else:
-        lines.append("🛑 Оффсейл предметов <b>не найдено</b>")
+        lines.append(f"🛑 Оффсейл предметов <b>не найдено</b>")
 
     lines.append("")
 
@@ -357,7 +456,10 @@ def build_report(result):
         if promo:
             lines.append(f"🎁 <b>Промо — {len(promo)} шт.:</b>")
             for it in promo:
-                lines.append(f'    • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>')
+                lines.append(
+                    f'    • <a href="https://www.roblox.com/catalog/{it["id"]}">'
+                    f'{it["name"]}</a>'
+                )
         else:
             lines.append("🎁 Промо-предметов <b>не найдено</b>")
 
@@ -365,9 +467,9 @@ def build_report(result):
 
 
 # ================================================================
-#  ПРОВЕРКА ОДНОГО COOKIE
+#  ЗАПУСК ПРОВЕРКИ
 # ================================================================
-async def run_check(message, cookie):
+async def run_check(message: Message, cookie: str) -> None:
     cookie = clean(cookie)
     if len(cookie) < 50:
         await message.answer("❌ Cookie слишком короткий, пропускаю.")
@@ -390,15 +492,18 @@ async def run_check(message, cookie):
         await status_msg.delete()
         buf = io.BytesIO(report.encode("utf-8"))
         buf.name = f"report_{result['user_id']}.txt"
-        await message.answer_document(buf, caption=f"📋 {result['username']} — отчёт (файл)")  # type: ignore
+        await message.answer_document(buf, caption=f"📋 {result['username']} — отчёт")  # type: ignore
     else:
-        await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
+        await status_msg.edit_text(
+            report,
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
+        )
 
 
 # ================================================================
-#  КЛАВИАТУРА
+#  КЛАВИАТУРА НАСТРОЕК
 # ================================================================
-def settings_kb():
+def settings_kb() -> InlineKeyboardMarkup:
     rows = []
     for key, label in ASSET_LABELS.items():
         icon = "✅" if settings["asset_types"][key] else "❌"
@@ -412,7 +517,7 @@ def settings_kb():
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def is_admin(obj):
+def is_admin(obj) -> bool:
     return obj.from_user.id == ADMIN_ID
 
 
@@ -526,7 +631,10 @@ async def handle_file(message: Message):
     for i, cookie in enumerate(cookies, 1):
         hdr = await message.answer(f"🔄 <b>{i}/{len(cookies)}</b>")
         await run_check(message, cookie)
-        await hdr.delete()
+        try:
+            await hdr.delete()
+        except Exception:
+            pass
         await asyncio.sleep(1)
     await message.answer(f"✅ <b>Готово!</b> Проверено {len(cookies)} аккаунтов.")
 
@@ -548,7 +656,10 @@ async def handle_text(message: Message, state: FSMContext):
         for i, cookie in enumerate(lines, 1):
             hdr = await message.answer(f"🔄 <b>{i}/{len(lines)}</b>")
             await run_check(message, cookie)
-            await hdr.delete()
+            try:
+                await hdr.delete()
+            except Exception:
+                pass
             await asyncio.sleep(1)
         await message.answer(f"✅ Готово! Проверено <b>{len(lines)}</b> аккаунтов.")
 
