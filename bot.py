@@ -16,7 +16,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # ================================================================
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
-ADMIN_ID  = 5883796026
+ADMIN_ID  =  115536598
 
 YEAR_FROM   = 2012
 YEAR_TO     = 2024
