@@ -9,7 +9,7 @@ from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
     LinkPreviewOptions,
-    BufferedInputFile  # <-- добавлен необходимый импорт
+    BufferedInputFile
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -146,6 +146,10 @@ settings = {
 class SetYear(StatesGroup):
     from_year = State()
     to_year   = State()
+
+class SearchState(StatesGroup):
+    waiting_for_term = State()
+    waiting_for_cookie = State()
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 
@@ -391,14 +395,15 @@ async def check_owns(cookie, user_id, asset_id):
 
 
 # ================================================================
-#  ГЛАВНАЯ ПРОВЕРКА
+#  ГЛАВНАЯ ПРОВЕРКА (теперь с поддержкой поиска)
 # ================================================================
 
-async def check_account(cookie, status_msg):
+async def check_account(cookie, status_msg, search_term=None):
     result = {
         "valid": False, "user_id": None, "username": None,
         "offsale": [], "promo_found": [],
         "inv_total": 0, "inv_opened": False, "debug": [],
+        "search_results": []
     }
 
     def log(msg):
@@ -441,7 +446,27 @@ async def check_account(cookie, status_msg):
         log("Инвентарь пустой или закрытый")
         return result
 
-    # 4. Промо-предметы
+    # 4. Если это поиск по названию
+    if search_term:
+        search_term_lower = search_term.lower()
+        found = []
+        for asset_id in all_ids:
+            details = await get_details(cookie, asset_id)
+            if not details:
+                continue
+            name = details.get("Name", "")
+            if search_term_lower in name.lower():
+                found.append({
+                    "id": asset_id,
+                    "name": name,
+                    "created": details.get("Created")
+                })
+            await asyncio.sleep(0.1)
+        result["search_results"] = found
+        log("Найдено по поиску: {}".format(len(found)))
+        return result
+
+    # 5. Промо-предметы (обычный режим)
     if settings["check_promo"]:
         promo_keys = list(CODE_ITEMS.keys())
         total_p    = len(promo_keys)
@@ -458,7 +483,7 @@ async def check_account(cookie, status_msg):
             await asyncio.sleep(0.2)
         log("Промо найдено: {}".format(len(result["promo_found"])))
 
-    # 5. Проверяем каждый предмет на оффсейл через economy API
+    # 6. Проверяем каждый предмет на оффсейл (обычный режим)
     await status_msg.edit_text("✅ <b>{}</b>\n🔍 Проверяю {} предметов...".format(uname, len(all_ids)))
     total = len(all_ids)
 
@@ -551,23 +576,23 @@ def build_report(result):
 
 
 # ================================================================
-#  ОДИНОЧНАЯ ПРОВЕРКА (исправлена отправка документа)
+#  ОДИНОЧНАЯ ПРОВЕРКА (с поддержкой поиска)
 # ================================================================
 
-async def run_check(message, cookie, show_debug=False):
-    cookie_original = cookie  # сохраняем исходную для отчёта
-    cookie_cleaned = clean_cookie(cookie)  # для работы используем очищенную
+async def run_check(message, cookie, show_debug=False, search_term=None):
+    cookie_original = cookie
+    cookie_cleaned = clean_cookie(cookie)
     if len(cookie_cleaned) < 50:
         await message.answer("❌ Cookie слишком короткий ({} симв.)".format(len(cookie_cleaned)))
         return
     async with CHECK_SEMAPHORE:
-        await _do_check(message, cookie_original, cookie_cleaned, show_debug)
+        await _do_check(message, cookie_original, cookie_cleaned, show_debug, search_term)
 
 
-async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
+async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False, search_term=None):
     status_msg = await message.answer("⏳ <b>Авторизация...</b>")
     try:
-        result = await check_account(cookie_cleaned, status_msg)
+        result = await check_account(cookie_cleaned, status_msg, search_term)
     except Exception as e:
         await status_msg.edit_text("❌ Ошибка:\n<code>{}</code>".format(e))
         return
@@ -575,14 +600,32 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
         errs = "\n".join(result["debug"])
         await status_msg.edit_text("❌ <b>Невалидный cookie</b>\n\n<code>{}</code>".format(errs))
         return
+
+    # Если это поиск
+    if search_term:
+        found = result.get("search_results", [])
+        if found:
+            lines = [f"🔍 <b>Результаты поиска для «{search_term}»</b>",
+                     f"👤 <a href=\"https://www.roblox.com/users/{result['user_id']}/profile\">{result['username']}</a>\n"]
+            for item in found:
+                line = f'• <a href="https://www.roblox.com/catalog/{item["id"]}">{item["name"]}</a>'
+                if item.get("created"):
+                    line += f" ({item['created'][:4]})"
+                lines.append(line)
+            report = "\n".join(lines)
+        else:
+            report = f"❌ На аккаунте {result['username']} предметов с названием «{search_term}» не найдено."
+        await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
+        return
+
+    # Обычный отчёт
     report = build_report(result)
-    # добавляем исходную куку в отчёт
     report += f"\n\n🍪 <code>{cookie_original}</code>"
     if len(report) > 3800:
         await status_msg.delete()
         buf = io.BytesIO(report.encode("utf-8"))
         file = BufferedInputFile(buf.getvalue(), filename=f"report_{result['user_id']}.txt")
-        await message.answer_document(file, caption="📋 {}".format(result["username"]))
+        await message.answer_document(file, caption=f"📋 {result['username']}")
     else:
         await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
     if show_debug or result["inv_total"] == 0:
@@ -611,7 +654,7 @@ async def _silent_check(cookie):
 
 
 # ================================================================
-#  БАТЧЕВАЯ ПРОВЕРКА (исправлена отправка документов)
+#  БАТЧЕВАЯ ПРОВЕРКА
 # ================================================================
 
 async def run_batch(message, cookies):
@@ -776,7 +819,8 @@ async def cmd_start(message: Message):
         "Отправь cookie текстом или .txt файлом\n\n"
         "⚙️ /settings — настройки\n"
         "ℹ️ /info — текущие настройки\n"
-        "🛠 /debug — отправь cookie после команды"
+        "🛠 /debug — отправь cookie после команды\n"
+        "🔍 /search — поиск предмета по названию"
     )
 
 
@@ -812,6 +856,67 @@ async def cmd_debug(message: Message):
     await run_check(message, parts[1].strip(), show_debug=True)
 
 
+@dp.message(Command("search"))
+async def cmd_search(message: Message, state: FSMContext):
+    if not is_admin(message):
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("🔍 Введите название предмета для поиска:")
+        await state.set_state(SearchState.waiting_for_term)
+        return
+    term = parts[1].strip()
+    await state.update_data(search_term=term)
+    await message.answer("📤 Отправьте .ROBLOSECURITY куки (текстом или .txt файл) для поиска:")
+    await state.set_state(SearchState.waiting_for_cookie)
+
+
+@dp.message(SearchState.waiting_for_term)
+async def process_search_term(message: Message, state: FSMContext):
+    if not is_admin(message):
+        await state.clear()
+        return
+    term = message.text.strip()
+    if not term:
+        await message.answer("❌ Название не может быть пустым.")
+        return
+    await state.update_data(search_term=term)
+    await message.answer("📤 Отправьте .ROBLOSECURITY куки (текстом или .txt файл) для поиска:")
+    await state.set_state(SearchState.waiting_for_cookie)
+
+
+@dp.message(SearchState.waiting_for_cookie, F.text)
+async def handle_search_cookie_text(message: Message, state: FSMContext):
+    if not is_admin(message):
+        await state.clear()
+        return
+    data = await state.get_data()
+    term = data.get("search_term")
+    cookie = message.text.strip()
+    await state.clear()
+    await run_check(message, cookie, show_debug=False, search_term=term)
+
+
+@dp.message(SearchState.waiting_for_cookie, F.document)
+async def handle_search_cookie_file(message: Message, state: FSMContext):
+    if not is_admin(message):
+        await state.clear()
+        return
+    data = await state.get_data()
+    term = data.get("search_term")
+    doc = message.document
+    if not doc.file_name.endswith(".txt"):
+        await message.answer("❌ Нужен .txt файл")
+        return
+    file = await bot.get_file(doc.file_id)
+    buf = io.BytesIO()
+    await bot.download_file(file.file_path, destination=buf)
+    buf.seek(0)
+    cookie = buf.read().decode("utf-8", errors="ignore").strip()
+    await state.clear()
+    await run_check(message, cookie, show_debug=False, search_term=term)
+
+
 @dp.callback_query(F.data.startswith("tog_"))
 async def cb_toggle(cb: CallbackQuery):
     if not is_admin(cb): return await cb.answer("⛔")
@@ -842,6 +947,9 @@ async def cb_yt(cb: CallbackQuery, state: FSMContext):
 
 @dp.message(SetYear.from_year)
 async def save_yf(message: Message, state: FSMContext):
+    if not is_admin(message):
+        await state.clear()
+        return
     try:
         y = int(message.text.strip())
         assert 2006 <= y <= 2030
@@ -854,6 +962,9 @@ async def save_yf(message: Message, state: FSMContext):
 
 @dp.message(SetYear.to_year)
 async def save_yt(message: Message, state: FSMContext):
+    if not is_admin(message):
+        await state.clear()
+        return
     try:
         y = int(message.text.strip())
         assert 2006 <= y <= 2030
@@ -865,8 +976,11 @@ async def save_yt(message: Message, state: FSMContext):
 
 
 @dp.message(F.document)
-async def handle_file(message: Message):
+async def handle_file(message: Message, state: FSMContext):
     if not is_admin(message): return
+    if await state.get_state():
+        # Если есть активное состояние, не обрабатываем здесь
+        return
     doc = message.document
     if not doc.file_name.endswith(".txt"):
         await message.answer("❌ Нужен .txt файл")
@@ -901,7 +1015,8 @@ async def handle_file(message: Message):
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
     if not is_admin(message): return
-    if await state.get_state(): return
+    if await state.get_state():
+        return
     raw_lines = message.text.splitlines()
     lines = []
     for l in raw_lines:
