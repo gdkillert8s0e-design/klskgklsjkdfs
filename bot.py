@@ -19,16 +19,19 @@ from aiogram.client.default import DefaultBotProperties
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
 ADMIN_IDS = [5883796026]  # Можно добавлять через запятую
-# =================================
 
-# Дефолтные настройки
+# Дефолтные настройки пользователя
 DEFAULT_SETTINGS = {
     'year_range': (2006, 2016),
     'item_types': [8, 41, 18, 19],
     'show_code_items': True
 }
 
-REQUESTS_PER_SECOND = 3
+# Параметры повторных попыток
+MAX_RETRIES = 3
+RETRY_DELAY = 1  # начальная задержка (сек)
+REQUEST_TIMEOUT = 15  # таймаут запроса
+# =================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,7 +43,7 @@ dp = Dispatcher(storage=MemoryStorage())
 DB_PATH = "roblox_checker.db"
 user_settings = {}  # хранилище настроек пользователей
 
-# ----- Список кодовых предметов -----
+# ----- Список кодовых предметов (ID и название) -----
 CODE_ITEMS = {
     189934238: "Fireman",
     4342314393: "Rainbow Squid Unicorn",
@@ -113,7 +116,6 @@ CODE_ITEMS = {
 def get_user_settings(uid: int) -> dict:
     """Возвращает настройки пользователя, дополняя их дефолтными."""
     settings = user_settings.get(uid, {})
-    # Создаём копию дефолтных настроек и обновляем из сохранённых
     result = DEFAULT_SETTINGS.copy()
     result.update(settings)
     return result
@@ -141,30 +143,42 @@ async def init_db():
         await db.commit()
     logger.info("База данных инициализирована")
 
-# ----- API функции -----
-async def fetch_json(session, url, headers=None):
-    try:
-        async with session.get(url, headers=headers, timeout=10) as resp:
-            if resp.status == 200:
-                return await resp.json()
-            else:
-                logger.warning(f"HTTP {resp.status} for {url}")
+# ----- Функция для выполнения HTTP-запроса с повторными попытками -----
+async def fetch_with_retry(session, url, headers=None, retries=MAX_RETRIES):
+    for attempt in range(1, retries + 1):
+        try:
+            async with session.get(url, headers=headers, timeout=REQUEST_TIMEOUT) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                elif resp.status == 429:
+                    retry_after = int(resp.headers.get('Retry-After', 5))
+                    logger.warning(f"Rate limited, waiting {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    continue
+                else:
+                    logger.warning(f"HTTP {resp.status} for {url} (attempt {attempt})")
+                    if attempt == retries:
+                        return None
+                    await asyncio.sleep(RETRY_DELAY * attempt)
+        except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+            logger.warning(f"Request error: {e} (attempt {attempt})")
+            if attempt == retries:
                 return None
-    except Exception as e:
-        logger.error(f"Request error: {e}")
-        return None
+            await asyncio.sleep(RETRY_DELAY * attempt)
+    return None
 
+# ----- Функции для работы с Roblox API -----
 async def get_user_id_from_cookie(cookie: str) -> tuple[int | None, str | None]:
     headers = {'Cookie': f'.ROBLOSECURITY={cookie}'}
     async with aiohttp.ClientSession() as session:
-        data = await fetch_json(session, 'https://users.roblox.com/v1/users/authenticated', headers)
+        data = await fetch_with_retry(session, 'https://users.roblox.com/v1/users/authenticated', headers)
         if data and 'id' in data and 'name' in data:
             return data['id'], data['name']
     return None, None
 
 async def get_user_info(user_id: int, session: aiohttp.ClientSession) -> dict:
     url = f'https://users.roblox.com/v1/users/{user_id}'
-    data = await fetch_json(session, url)
+    data = await fetch_with_retry(session, url)
     if not data:
         return {}
     return {
@@ -184,41 +198,32 @@ async def get_inventory(user_id: int, session: aiohttp.ClientSession, cookie: st
     while True:
         page_num += 1
         url = base_url + (f'&cursor={cursor}' if cursor else '')
-        try:
-            async with session.get(url, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    # Логируем количество элементов на странице
-                    page_items = data.get('data', [])
-                    logger.info(f"Страница {page_num}: получено {len(page_items)} предметов")
-                    # Для отладки покажем первые 3 предмета
-                    if page_items:
-                        for i, item in enumerate(page_items[:3]):
-                            logger.info(f"  Пример {i+1}: {item.get('name')} (ID: {item.get('assetId')}) collectibleItemId={item.get('collectibleItemId')}")
-                    # Фильтруем по наличию collectibleItemId (коллекционные предметы)
-                    for item in page_items:
-                        if item.get('collectibleItemId'):
-                            items.append(item)
-                    cursor = data.get('nextPageCursor')
-                    if not cursor:
-                        break
-                else:
-                    logger.warning(f"Не удалось получить инвентарь: HTTP {resp.status}")
-                    break
-        except Exception as e:
-            logger.error(f"Ошибка при запросе инвентаря: {e}")
+        data = await fetch_with_retry(session, url, headers)
+        if not data:
+            logger.warning(f"Не удалось получить инвентарь на странице {page_num}")
+            break
+        page_items = data.get('data', [])
+        logger.info(f"Страница {page_num}: получено {len(page_items)} предметов")
+        # Фильтруем только коллекционные (оффсейл)
+        for item in page_items:
+            if item.get('collectibleItemId'):
+                items.append(item)
+        cursor = data.get('nextPageCursor')
+        if not cursor:
             break
     logger.info(f"Найдено коллекционных предметов: {len(items)}")
     return items
 
 async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dict | None:
+    # Проверяем кэш
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute('SELECT name, type, created FROM items_cache WHERE asset_id = ?', (asset_id,))
         row = await cursor.fetchone()
         if row:
             return {'name': row[0], 'type': row[1], 'created': row[2]}
+    # Запрос к economy API
     url = f'https://economy.roblox.com/v2/assets/{asset_id}/details'
-    data = await fetch_json(session, url)
+    data = await fetch_with_retry(session, url)
     if not data:
         return None
     item = {
@@ -226,6 +231,7 @@ async def get_item_details(asset_id: int, session: aiohttp.ClientSession) -> dic
         'type': data.get('AssetTypeId'),
         'created': data.get('Created')
     }
+    # Сохраняем в кэш
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('''
             INSERT OR REPLACE INTO items_cache (asset_id, name, type, created, last_updated)
@@ -262,7 +268,7 @@ async def check_account(cookie: str, settings: dict) -> dict:
         year_range = settings.get('year_range', (2006, 2016))
         show_code_items = settings.get('show_code_items', True)
         logger.info(f"Ищем предметы типов {target_types} за {year_range[0]}-{year_range[1]} годы")
-        sem = asyncio.Semaphore(REQUESTS_PER_SECOND)
+        sem = asyncio.Semaphore(3)  # не более 3 одновременных запросов
         async def process_item(item):
             async with sem:
                 asset_id = item.get('assetId')
@@ -531,17 +537,18 @@ async def process_cookie(message: types.Message, cookie: str):
     report_lines.append("=== ROBLOX OFFSALE REPORT ===\n")
     report_lines.append(f"👤 Ник: {result['username']} (ID: {result['user_id']})")
     report_lines.append(f"📅 Создан аккаунт: {result['created'][:10] if result['created'] else 'Неизвестно'}")
-    report_lines.append(f"✅ Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}\n")
+    report_lines.append(f"✅ Верификация возраста: {'Да' if result['age_verified'] else 'Нет'}")
+    report_lines.append("")  # пустая строка
 
     if result['code_count'] > 0 and settings.get('show_code_items', True):
-        report_lines.append(f"\n🔨 КОДОВЫЕ ПРЕДМЕТЫ: {result['code_count']}")
+        report_lines.append(f"🔨 КОДОВЫЕ ПРЕДМЕТЫ: {result['code_count']}")
         report_lines.append("─" * 40)
         for item in result['code_items']:
             report_lines.append(f"• {item['name']}")
             report_lines.append(f"  Ссылка: https://www.roblox.com/catalog/{item['id']}\n")
 
     if result['rare_count'] > 0:
-        report_lines.append(f"\n💎 ОФФСЕЙЛ ПРЕДМЕТЫ ЗА {settings['year_range'][0]}-{settings['year_range'][1]}: {result['rare_count']}")
+        report_lines.append(f"💎 ОФФСЕЙЛ ПРЕДМЕТЫ ЗА {settings['year_range'][0]}-{settings['year_range'][1]}: {result['rare_count']}")
         report_lines.append("─" * 40)
         for item in result['items']:
             item_date = item['created'][:4] if item['created'] else 'Неизвестно'
@@ -549,7 +556,7 @@ async def process_cookie(message: types.Message, cookie: str):
             report_lines.append(f"{item_type} {item['name']} ({item_date})")
             report_lines.append(f"  Ссылка: https://www.roblox.com/catalog/{item['id']}\n")
     else:
-        report_lines.append(f"\n❌ Оффсейл предметов за {settings['year_range'][0]}-{settings['year_range'][1]} не найдено.")
+        report_lines.append(f"❌ Оффсейл предметов за {settings['year_range'][0]}-{settings['year_range'][1]} не найдено.")
 
     report = "\n".join(report_lines)
 
