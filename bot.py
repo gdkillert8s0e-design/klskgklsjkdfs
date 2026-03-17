@@ -67,7 +67,68 @@ ASSET_LABELS = {
 CODE_ITEMS = {
     189934238:  "Fireman",
     4342314393: "Rainbow Squid Unicorn",
-    # ... (полный список из предыдущего кода)
+    263405835:  "Chicken Headrow",
+    263405839:  "Black Iron Tentacles",
+    263405842:  "Code Review Specs",
+    263405844:  "Stickpack",
+    263405846:  "Shark Fin",
+    263405849:  "Federation Necklace",
+    263405851:  "Backup Mr. Robot",
+    263405853:  "Dark Lord of SQL",
+    263405855:  "Roblox visor 1",
+    263405857:  "Silver Bow Tie",
+    263405859:  "Dodgeball Helmet",
+    263405861:  "Shoulder Raccoon",
+    263405863:  "Dued1",
+    263405865:  "Pauldrons",
+    263405867:  "Octember Encore",
+    263405869:  "Umberhorns",
+    128540404:  "Police Cap",
+    128540406:  "American Baseball Cap",
+    128540408:  "Orange Cap",
+    218491492:  "Navy Queen otn",
+    128540410:  "Zombie Knit",
+    128540412:  "Epic Miners Headlamp",
+    128540414:  "Beast Mode Bandana",
+    162295698:  "Golden Reingment",
+    128540416:  "Beast Scythe",
+    128540418:  "Hare Hoodie",
+    128540420:  "Diamond Tiara",
+    128540422:  "Callmehbob",
+    128540424:  "Sword Cane",
+    128540426:  "Selfie Stick",
+    128540428:  "Phantom Forces Combat Knife",
+    128540430:  "Golden Horns",
+    128540432:  "The Soup is Dry",
+    128540434:  "Monster Grumpy Face",
+    128540436:  "Elegant Evening Face",
+    128540438:  "Super Pink Make-Up",
+    128540440:  "Cyanskeleface",
+    128540442:  "Pizza Face",
+    128540444:  "Bakonetta",
+    128540446:  "Isabella",
+    128540448:  "Mon Cheri",
+    128540450:  "Rogueish Good Looks",
+    128540452:  "Mixologist's Smile",
+    128540454:  "BiteyMcFace",
+    128540456:  "Performing Mime",
+    128540458:  "Rainbow Spirit Face",
+    128540460:  "Mermaid Mystique",
+    128540462:  "Starry Eyes Sparkling",
+    128540464:  "Sparkling Friendly Wink",
+    128540466:  "Kandi's Sprinkle Face",
+    128540468:  "Tears of Sorrow",
+    128540470:  "Fashion Face",
+    128540472:  "Princess Alexis",
+    128540474:  "Otakufaic",
+    128540476:  "Pop Queen",
+    128540478:  "Assassin Face",
+    128540480:  "Sapphire Gaze",
+    128540482:  "Persephone's E-Girl",
+    128540484:  "Arachnid Queen",
+    128540486:  "Rainbow Barf Face",
+    128540488:  "Star Sorority",
+    128540490:  "Tsundere Face",
     128540492:  "Winning Smile",
 }
 
@@ -393,41 +454,26 @@ def build_report(result):
             lines.append("🎁 Промо-предметов <b>не найдено</b>")
     return "\n".join(lines)
 
-# ========== ОДИНОЧНАЯ ПРОВЕРКА (устарела, но оставлена для совместимости) ==========
-async def run_check(message, cookie, show_debug=False, search_term=None):
+# ========== ОДИНОЧНАЯ ПРОВЕРКА (только для обычных кук, не для поиска) ==========
+async def run_check(message, cookie, show_debug=False):
     cookie_original = cookie
     cookie_cleaned = clean_cookie(cookie)
     if len(cookie_cleaned) < 50:
         await message.answer(f"❌ Cookie слишком короткий ({len(cookie_cleaned)} симв.)")
         return
     async with CHECK_SEMAPHORE:
-        await _do_check(message, cookie_original, cookie_cleaned, show_debug, search_term)
+        await _do_check(message, cookie_original, cookie_cleaned, show_debug)
 
-async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False, search_term=None):
+async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
     status_msg = await message.answer("⏳ <b>Авторизация...</b>")
     try:
-        result = await check_account(cookie_cleaned, status_msg, search_term)
+        result = await check_account(cookie_cleaned, status_msg)
     except Exception as e:
         await status_msg.edit_text(f"❌ Ошибка:\n<code>{e}</code>")
         return
     if not result["valid"]:
         errs = "\n".join(result["debug"])
         await status_msg.edit_text(f"❌ <b>Невалидный cookie</b>\n\n<code>{errs}</code>")
-        return
-    if search_term:
-        found = result.get("search_results", [])
-        if found:
-            lines = [f"🔍 <b>Результаты поиска для «{search_term}»</b>",
-                     f'👤 <a href="https://www.roblox.com/users/{result["user_id"]}/profile">{result["username"]}</a>\n']
-            for item in found:
-                line = f'• <a href="https://www.roblox.com/catalog/{item["id"]}">{item["name"]}</a>'
-                if item.get("created"):
-                    line += f" ({item['created'][:4]})"
-                lines.append(line)
-            report = "\n".join(lines)
-        else:
-            report = f"❌ На аккаунте {result['username']} предметов с названием «{search_term}» не найдено."
-        await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
         return
     report = build_report(result) + f"\n\n🍪 <code>{cookie_original}</code>"
     if len(report) > 3800:
@@ -719,7 +765,7 @@ async def handle_search_cookie_text(message: Message, state: FSMContext):
         await state.clear()
         return
     await state.clear()
-    # ВСЕГДА вызываем батчевую функцию, даже для одной куки
+    # ВСЕГДА вызываем батчевую функцию
     await run_batch_search(message, cookies, term)
 
 @dp.message(SearchState.waiting_for_cookie, F.document)
