@@ -15,7 +15,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
 
 # ─────────────────────────────────────────────
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+from aiogram.client.default import DefaultBotProperties
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 logging.basicConfig(level=logging.INFO)
 
