@@ -169,49 +169,36 @@ def rbx_headers(cookie):
 
 
 async def get_user_info(cookie):
-    """Пробует два эндпоинта для авторизации"""
-    # Попытка 1 — основной API
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(
-                "https://users.roblox.com/v1/users/authenticated",
-                headers=rbx_headers(cookie),
-                timeout=aiohttp.ClientTimeout(total=15),
-                allow_redirects=True
-            ) as r:
-                if r.status == 200:
-                    d = await r.json(content_type=None)
-                    uid  = d.get("id")
-                    name = d.get("displayName") or d.get("name") or "?"
-                    if uid:
-                        return {"id": int(uid), "name": name}
-    except Exception:
-        pass
-
-    # Попытка 2 — mobileapi
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(
-                "https://www.roblox.com/mobileapi/userinfo",
-                headers=rbx_headers(cookie),
-                timeout=aiohttp.ClientTimeout(total=15),
-                allow_redirects=True
-            ) as r:
-                if r.status == 200:
-                    d = await r.json(content_type=None)
-                    uid  = d.get("UserID")
-                    name = d.get("UserName") or "?"
-                    if uid:
-                        return {"id": int(uid), "name": name}
-    except Exception:
-        pass
-
-    return None
+    checks = [
+        ("https://users.roblox.com/v1/users/authenticated", "id",     "displayName"),
+        ("https://www.roblox.com/mobileapi/userinfo",       "UserID", "UserName"),
+    ]
+    last_err = "нет ответа"
+    for url, id_key, name_key in checks:
+        try:
+            conn = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(connector=conn) as s:
+                async with s.get(
+                    url,
+                    headers=rbx_headers(cookie),
+                    timeout=aiohttp.ClientTimeout(total=15),
+                    allow_redirects=True
+                ) as r:
+                    last_err = "HTTP {}".format(r.status)
+                    if r.status == 200:
+                        d    = await r.json(content_type=None)
+                        uid  = d.get(id_key)
+                        name = d.get(name_key) or d.get("name") or "?"
+                        if uid:
+                            return {"id": int(uid), "name": name, "_err": ""}
+        except Exception as e:
+            last_err = str(e)
+    return {"_err": last_err}
 
 
 async def get_csrf(cookie):
     try:
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
             async with s.post(
                 "https://auth.roblox.com/v2/logout",
                 headers=rbx_headers(cookie),
@@ -231,7 +218,7 @@ async def open_inventory(cookie):
         hdrs = dict(rbx_headers(cookie))
         hdrs["x-csrf-token"] = csrf
         hdrs["Content-Type"] = "application/json"
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
             async with s.patch(
                 "https://accountsettings.roblox.com/v1/inventory-privacy",
                 json={"inventoryPrivacy": 1},
@@ -247,7 +234,7 @@ async def open_inventory(cookie):
 async def fetch_inventory_type(cookie, user_id, asset_type_id):
     ids    = []
     cursor = ""
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
         while True:
             params = {"pageSize": 100, "sortOrder": "Asc"}
             if cursor:
@@ -279,7 +266,7 @@ async def fetch_inventory_type(cookie, user_id, asset_type_id):
 
 async def get_asset_details(cookie, asset_id):
     try:
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
             async with s.get(
                 "https://economy.roblox.com/v2/assets/{}/details".format(asset_id),
                 headers=rbx_headers(cookie),
@@ -294,7 +281,7 @@ async def get_asset_details(cookie, asset_id):
 
 async def check_owns_promo(cookie, user_id, asset_id):
     try:
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as s:
             async with s.get(
                 "https://inventory.roblox.com/v1/users/{}/items/Asset/{}".format(user_id, asset_id),
                 headers=rbx_headers(cookie),
@@ -329,8 +316,9 @@ async def check_account(cookie, status_msg):
 
     # 1. Авторизация
     user_info = await get_user_info(cookie)
-    if not user_info:
-        log("Авторизация провалилась — оба эндпоинта вернули не 200")
+    err = user_info.get("_err", "") if user_info else "нет ответа"
+    if err or not user_info.get("id"):
+        log("Авторизация провалилась: {}".format(err))
         return result
 
     result["valid"]    = True
