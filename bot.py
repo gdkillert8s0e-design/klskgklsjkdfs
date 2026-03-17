@@ -36,18 +36,18 @@ ASSET_TYPES = {
 }
 # ================================================================
 
-# v2 API принимает числовые ID типов через запятую
-ASSET_TYPE_IDS = {
-    "faces":    [18],
-    "hats":     [8],
-    "hair":     [41],
-    "neck":     [42],
-    "shoulder": [45],
-    "front":    [46],
-    "back":     [47],
-    "waist":    [43],
-    "gear":     [11],
-    "clothing": [12, 13],
+# v2 API принимает СТРОКИ, не числа
+ASSET_TYPE_STRINGS = {
+    "faces":    ["Face"],
+    "hats":     ["Hat"],
+    "hair":     ["HairAccessory"],
+    "neck":     ["FaceAccessory"],
+    "shoulder": ["ShoulderAccessory"],
+    "front":    ["FrontAccessory"],
+    "back":     ["BackAccessory"],
+    "waist":    ["WaistAccessory"],
+    "gear":     ["Gear"],
+    "clothing": ["Shirt", "Pants"],
 }
 
 ASSET_LABELS = {
@@ -155,10 +155,12 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.
 
 def clean_cookie(raw):
     c = raw.strip()
+    # Убираем WARNING заголовок Roblox
     if "_|WARNING" in c and "--|" in c:
         c = c.split("--|", 1)[-1].strip()
+    # Убираем префикс если есть
     for p in [".ROBLOSECURITY=", "ROBLOSECURITY="]:
-        if c.startswith(p):
+        if c.lower().startswith(p.lower()):
             c = c[len(p):]
     return c.strip()
 
@@ -177,7 +179,7 @@ def rbx_h(cookie):
 def new_s():
     return aiohttp.ClientSession(
         connector=aiohttp.TCPConnector(ssl=False),
-        timeout=aiohttp.ClientTimeout(total=20)
+        timeout=aiohttp.ClientTimeout(total=25)
     )
 
 
@@ -187,6 +189,7 @@ def new_s():
 
 async def get_user_info(cookie):
     async with new_s() as s:
+        # Метод 1 — основной
         try:
             async with s.get(
                 "https://users.roblox.com/v1/users/authenticated",
@@ -198,6 +201,7 @@ async def get_user_info(cookie):
                         return {"id": int(d["id"]), "name": d.get("displayName") or d.get("name") or "?"}
         except Exception:
             pass
+        # Метод 2 — запасной
         try:
             async with s.get(
                 "https://www.roblox.com/mobileapi/userinfo",
@@ -213,58 +217,7 @@ async def get_user_info(cookie):
 
 
 # ================================================================
-#  INVENTORY — использует v2 API (именно он работал в первый раз)
-# ================================================================
-
-async def fetch_inventory_v2(cookie, user_id, type_ids, log):
-    """
-    inventory.roblox.com/v2/users/{id}/inventory?assetTypes=18,8,...
-    Это тот самый эндпоинт что работал изначально.
-    """
-    ids      = []
-    cursor   = ""
-    types_str = ",".join(str(t) for t in type_ids)
-
-    async with new_s() as s:
-        page = 0
-        while True:
-            page += 1
-            url = "https://inventory.roblox.com/v2/users/{}/inventory".format(user_id)
-            params = {"assetTypes": types_str, "limit": 100, "sortOrder": "Asc"}
-            if cursor:
-                params["cursor"] = cursor
-            try:
-                async with s.get(url, params=params, headers=rbx_h(cookie)) as r:
-                    log("Инвентарь v2 стр.{} типы=[{}]: HTTP {}".format(page, types_str, r.status))
-                    if r.status != 200:
-                        body = ""
-                        try:
-                            body = await r.text()
-                        except Exception:
-                            pass
-                        log("  тело: {}".format(body[:120]))
-                        break
-                    data = await r.json(content_type=None)
-                    chunk = []
-                    for item in data.get("data", []):
-                        aid = item.get("assetId") or item.get("id")
-                        if aid:
-                            chunk.append(int(aid))
-                    ids.extend(chunk)
-                    log("  стр.{}: {} предметов".format(page, len(chunk)))
-                    cursor = data.get("nextPageCursor") or ""
-                    if not cursor:
-                        break
-            except Exception as e:
-                log("  стр.{} ошибка: {}".format(page, str(e)[:80]))
-                break
-            await asyncio.sleep(0.4)
-
-    return ids
-
-
-# ================================================================
-#  OPEN INVENTORY — правильный эндпоинт
+#  CSRF
 # ================================================================
 
 async def get_csrf(cookie, log):
@@ -276,53 +229,125 @@ async def get_csrf(cookie, log):
             try:
                 async with s.post(url, headers=rbx_h(cookie)) as r:
                     token = r.headers.get("x-csrf-token")
-                    log("CSRF из {}: HTTP {} token={}".format(
-                        url.split("/")[-1], r.status, token[:8] + "..." if token else "None"))
+                    log("CSRF {} HTTP{} token={}".format(
+                        url.split("/")[-1], r.status,
+                        (token[:8] + "...") if token else "None"
+                    ))
                     if token:
                         return token
             except Exception as e:
-                log("CSRF ошибка {}: {}".format(url, str(e)[:60]))
+                log("CSRF err: {}".format(str(e)[:60]))
     return None
 
+
+# ================================================================
+#  OPEN INVENTORY — пробует все известные эндпоинты
+# ================================================================
 
 async def open_inventory(cookie, log):
     csrf = await get_csrf(cookie, log)
     if not csrf:
+        log("Не получил CSRF — не смогу открыть инвентарь")
         return False
 
     hdrs = dict(rbx_h(cookie))
     hdrs["x-csrf-token"] = csrf
     hdrs["Content-Type"] = "application/json"
 
-    # Правильный URL для privacy настроек (v1 с POST)
-    endpoints = [
-        ("POST",  "https://accountsettings.roblox.com/v1/inventory-privacy"),
-        ("PATCH", "https://accountsettings.roblox.com/v1/inventory-privacy"),
-        # Старый эндпоинт который использовали раньше
-        ("POST",  "https://www.roblox.com/privacy/settings"),
+    # Все известные варианты эндпоинта приватности инвентаря
+    attempts = [
+        # (метод, url, тело)
+        ("POST",  "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
+                  {"inventoryPrivacy": 1}),
+        ("PATCH", "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
+                  {"inventoryPrivacy": 1}),
+        ("POST",  "https://accountsettings.roblox.com/v1/privacy",
+                  {"InventoryPrivacySetting": "AllUsers"}),
+        ("PATCH", "https://accountsettings.roblox.com/v1/privacy",
+                  {"InventoryPrivacySetting": "AllUsers"}),
+        ("POST",  "https://accountsettings.roblox.com/v1/app-privacy-settings",
+                  {"InventoryPrivacySetting": 1}),
     ]
 
     async with new_s() as s:
-        for method, url in endpoints:
+        for method, url, body in attempts:
             try:
                 fn = s.post if method == "POST" else s.patch
-                async with fn(url, json={"inventoryPrivacy": 1}, headers=hdrs) as r:
-                    body = ""
+                async with fn(url, json=body, headers=hdrs) as r:
+                    body_text = ""
                     try:
-                        body = await r.text()
+                        body_text = await r.text()
                     except Exception:
                         pass
-                    log("{} {} -> HTTP {} | {}".format(method, url.split("/")[-1], r.status, body[:80]))
+                    log("{} {} -> {} | {}".format(method, url.split("/")[-1], r.status, body_text[:60]))
                     if r.status in (200, 204):
+                        log("Инвентарь открыт!")
                         return True
             except Exception as e:
-                log("{} {} -> ошибка: {}".format(method, url, str(e)[:60]))
+                log("{} {} -> err: {}".format(method, url.split("/")[-1], str(e)[:50]))
 
     return False
 
 
 # ================================================================
-#  ASSET DETAILS
+#  FETCH INVENTORY — v2 API со строковыми типами
+# ================================================================
+
+async def fetch_inventory(cookie, user_id, type_strings, log):
+    """
+    v2 API принимает строковые имена типов: Hat, Face, HairAccessory и т.д.
+    Отправляет по одному типу за раз чтобы избежать ошибок.
+    """
+    all_ids = set()
+
+    async with new_s() as s:
+        for type_str in type_strings:
+            cursor = ""
+            page   = 0
+            while True:
+                page += 1
+                params = {"assetTypes": type_str, "limit": 100, "sortOrder": "Asc"}
+                if cursor:
+                    params["cursor"] = cursor
+                try:
+                    async with s.get(
+                        "https://inventory.roblox.com/v2/users/{}/inventory".format(user_id),
+                        params=params,
+                        headers=rbx_h(cookie)
+                    ) as r:
+                        if r.status == 403:
+                            log("  {} стр{}: 403 (инвентарь закрыт)".format(type_str, page))
+                            break
+                        if r.status != 200:
+                            body = ""
+                            try:
+                                body = await r.text()
+                            except Exception:
+                                pass
+                            log("  {} стр{}: HTTP {} | {}".format(type_str, page, r.status, body[:80]))
+                            break
+                        data = await r.json(content_type=None)
+                        chunk = []
+                        for item in data.get("data", []):
+                            aid = item.get("assetId") or item.get("id")
+                            if aid:
+                                chunk.append(int(aid))
+                        all_ids.update(chunk)
+                        if page == 1:
+                            log("  {}: {} шт. (стр.1)".format(type_str, len(chunk)))
+                        cursor = data.get("nextPageCursor") or ""
+                        if not cursor:
+                            break
+                except Exception as e:
+                    log("  {} err: {}".format(type_str, str(e)[:60]))
+                    break
+                await asyncio.sleep(0.3)
+
+    return list(all_ids)
+
+
+# ================================================================
+#  ASSET DETAILS + PROMO
 # ================================================================
 
 async def get_details(cookie, asset_id):
@@ -372,7 +397,7 @@ async def check_account(cookie, status_msg):
     log("Авторизация...")
     user_info = await get_user_info(cookie)
     if not user_info:
-        log("Не удалось войти")
+        log("Не удалось войти — cookie неверный или истёк")
         return result
 
     result["valid"]    = True
@@ -386,22 +411,18 @@ async def check_account(cookie, status_msg):
     await status_msg.edit_text("✅ <b>{}</b>\n🔓 Открываю инвентарь...".format(uname))
     opened = await open_inventory(cookie, log)
     result["inv_opened"] = opened
-    await asyncio.sleep(1.5)
+    # Ждём пока Roblox применит настройку
+    await asyncio.sleep(2)
 
-    # 3. Загружаем инвентарь через v2 API
+    # 3. Загружаем инвентарь (v2 со строковыми типами)
     await status_msg.edit_text("✅ <b>{}</b>\n📦 Загружаю инвентарь...".format(uname))
 
-    # Собираем все включённые type_id в один список
-    enabled_type_ids = []
+    type_strings = []
     for key, on in settings["asset_types"].items():
         if on:
-            enabled_type_ids.extend(ASSET_TYPE_IDS[key])
+            type_strings.extend(ASSET_TYPE_STRINGS[key])
 
-    all_ids = set()
-    if enabled_type_ids:
-        items = await fetch_inventory_v2(cookie, uid, enabled_type_ids, log)
-        all_ids.update(items)
-
+    all_ids = await fetch_inventory(cookie, uid, type_strings, log)
     result["inv_total"] = len(all_ids)
     log("Предметов итого: {}".format(len(all_ids)))
 
@@ -409,7 +430,7 @@ async def check_account(cookie, status_msg):
         log("Инвентарь пустой или закрытый")
         return result
 
-    # 4. Промо
+    # 4. Промо-предметы
     if settings["check_promo"]:
         promo_keys = list(CODE_ITEMS.keys())
         total_p    = len(promo_keys)
@@ -426,12 +447,11 @@ async def check_account(cookie, status_msg):
             await asyncio.sleep(0.2)
         log("Промо найдено: {}".format(len(result["promo_found"])))
 
-    # 5. Проверяем каждый предмет на оффсейл
+    # 5. Проверяем каждый предмет на оффсейл через economy API
     await status_msg.edit_text("✅ <b>{}</b>\n🔍 Проверяю {} предметов...".format(uname, len(all_ids)))
-    ids_list = list(all_ids)
-    total    = len(ids_list)
+    total = len(all_ids)
 
-    for i, asset_id in enumerate(ids_list):
+    for i, asset_id in enumerate(all_ids):
         if i % 30 == 0:
             try:
                 await status_msg.edit_text("✅ <b>{}</b>\n🔍 {}/{}...".format(uname, i, total))
@@ -522,7 +542,7 @@ def build_report(result):
 async def run_check(message, cookie, show_debug=False):
     cookie = clean_cookie(cookie)
     if len(cookie) < 50:
-        await message.answer("❌ Cookie слишком короткий ({} символов).".format(len(cookie)))
+        await message.answer("❌ Cookie слишком короткий ({} симв.)".format(len(cookie)))
         return
     status_msg = await message.answer("⏳ <b>Авторизация...</b>")
     try:
@@ -546,6 +566,10 @@ async def run_check(message, cookie, show_debug=False):
         dbg = "🛠 <b>Лог:</b>\n" + "\n".join("<code>{}</code>".format(l) for l in result["debug"])
         if len(dbg) < 3800:
             await message.answer(dbg)
+        else:
+            buf2 = io.BytesIO(("\n".join(result["debug"])).encode("utf-8"))
+            buf2.name = "debug_{}.txt".format(result.get("user_id", "unknown"))
+            await message.answer_document(buf2, caption="🛠 Лог")
 
 
 # ================================================================
@@ -556,7 +580,10 @@ def settings_kb():
     rows = []
     for key, label in ASSET_LABELS.items():
         icon = "✅" if settings["asset_types"][key] else "❌"
-        rows.append([InlineKeyboardButton(text="{} {}".format(icon, label), callback_data="tog_{}".format(key))])
+        rows.append([InlineKeyboardButton(
+            text="{} {}".format(icon, label),
+            callback_data="tog_{}".format(key)
+        )])
     pi = "✅" if settings["check_promo"] else "❌"
     rows.append([InlineKeyboardButton(text="{} 🎁 Промо".format(pi), callback_data="tog_promo")])
     rows.append([
@@ -580,8 +607,11 @@ async def cmd_start(message: Message):
     await message.answer(
         "🎮 <b>Roblox Offsale Checker</b>\n\n"
         "Отправь cookie текстом или .txt файлом\n\n"
-        "⚙️ /settings  ℹ️ /info  🛠 /debug [cookie]"
+        "⚙️ /settings — настройки\n"
+        "ℹ️ /info — текущие настройки\n"
+        "🛠 /debug — отправь cookie после команды"
     )
+
 
 @dp.message(Command("info"))
 async def cmd_info(message: Message):
@@ -595,19 +625,26 @@ async def cmd_info(message: Message):
         )
     )
 
+
 @dp.message(Command("settings"))
 async def cmd_settings(message: Message):
     if not is_admin(message): return
     await message.answer("⚙️ <b>Настройки</b>", reply_markup=settings_kb())
 
+
 @dp.message(Command("debug"))
 async def cmd_debug(message: Message):
     if not is_admin(message): return
+    # Берём всё после /debug как cookie
     parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Использование: /debug [cookie]")
+    if len(parts) < 2 or len(parts[1].strip()) < 50:
+        await message.answer(
+            "Использование: отправь cookie следующим сообщением\n"
+            "или: /debug [cookie]"
+        )
         return
     await run_check(message, parts[1].strip(), show_debug=True)
+
 
 @dp.callback_query(F.data.startswith("tog_"))
 async def cb_toggle(cb: CallbackQuery):
@@ -620,6 +657,7 @@ async def cb_toggle(cb: CallbackQuery):
     await cb.message.edit_reply_markup(reply_markup=settings_kb())
     await cb.answer("✅")
 
+
 @dp.callback_query(F.data == "set_yf")
 async def cb_yf(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb): return await cb.answer("⛔")
@@ -627,12 +665,14 @@ async def cb_yf(cb: CallbackQuery, state: FSMContext):
     await state.set_state(SetYear.from_year)
     await cb.answer()
 
+
 @dp.callback_query(F.data == "set_yt")
 async def cb_yt(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb): return await cb.answer("⛔")
     await cb.message.answer("📅 Конечный год (сейчас {}):".format(settings["year_to"]))
     await state.set_state(SetYear.to_year)
     await cb.answer()
+
 
 @dp.message(SetYear.from_year)
 async def save_yf(message: Message, state: FSMContext):
@@ -645,6 +685,7 @@ async def save_yf(message: Message, state: FSMContext):
     except (ValueError, AssertionError):
         await message.answer("❌ Введи число 2006–2030")
 
+
 @dp.message(SetYear.to_year)
 async def save_yt(message: Message, state: FSMContext):
     try:
@@ -655,6 +696,7 @@ async def save_yt(message: Message, state: FSMContext):
         await state.clear()
     except (ValueError, AssertionError):
         await message.answer("❌ Введи число 2006–2030")
+
 
 @dp.message(F.document)
 async def handle_file(message: Message):
@@ -681,6 +723,7 @@ async def handle_file(message: Message):
         await asyncio.sleep(1)
     await message.answer("✅ Готово! {} аккаунтов.".format(len(cookies)))
 
+
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
     if not is_admin(message): return
@@ -700,6 +743,7 @@ async def handle_text(message: Message, state: FSMContext):
             except Exception: pass
             await asyncio.sleep(1)
         await message.answer("✅ Готово! {} аккаунтов.".format(len(lines)))
+
 
 # ================================================================
 async def main():
