@@ -161,16 +161,9 @@ def clean_cookie(raw):
 
 def make_session(cookie):
     jar = aiohttp.CookieJar(unsafe=True)
-    # Добавляем кук вручную через SimpleCookie
-    import http.cookiejar
-    morsel = http.cookies.Morsel()
-    morsel.set(".ROBLOSECURITY", cookie, cookie)
-    morsel["domain"] = ".roblox.com"
-    morsel["path"]   = "/"
-    # Используем update_cookies с простым dict
     jar.update_cookies(
         {".ROBLOSECURITY": cookie},
-        response_url=aiohttp.typedefs.StrOrURL("https://www.roblox.com")
+        response_url="https://www.roblox.com"
     )
     return aiohttp.ClientSession(
         cookie_jar=jar,
