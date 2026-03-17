@@ -16,7 +16,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # ================================================================
 BOT_TOKEN = "8035442503:AAG-gdNAKMFhnyyaHGfjeMdh48-sa-Jd55A"
-ADMIN_ID  =  115536598
+ADMIN_IDS = {5883796026, 115536598}  # добавляй через запятую
 
 YEAR_FROM   = 2012
 YEAR_TO     = 2024
@@ -293,10 +293,12 @@ async def open_inventory(cookie, log):
 #  FETCH INVENTORY — v2 API со строковыми типами
 # ================================================================
 
+# Семафор — не более 5 одновременных проверок аккаунтов
+CHECK_SEMAPHORE = asyncio.Semaphore(5)
+
 async def fetch_inventory(cookie, user_id, type_strings, log):
     """
-    v2 API принимает строковые имена типов: Hat, Face, HairAccessory и т.д.
-    Отправляет по одному типу за раз чтобы избежать ошибок.
+    v2 API — строковые типы, по одному за раз.
     """
     all_ids = set()
 
@@ -341,7 +343,7 @@ async def fetch_inventory(cookie, user_id, type_strings, log):
                 except Exception as e:
                     log("  {} err: {}".format(type_str, str(e)[:60]))
                     break
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
 
     return list(all_ids)
 
@@ -544,6 +546,11 @@ async def run_check(message, cookie, show_debug=False):
     if len(cookie) < 50:
         await message.answer("❌ Cookie слишком короткий ({} симв.)".format(len(cookie)))
         return
+    async with CHECK_SEMAPHORE:
+        await _do_check(message, cookie, show_debug)
+
+
+async def _do_check(message, cookie, show_debug=False):
     status_msg = await message.answer("⏳ <b>Авторизация...</b>")
     try:
         result = await check_account(cookie, status_msg)
@@ -594,7 +601,7 @@ def settings_kb():
 
 
 def is_admin(obj):
-    return obj.from_user.id == ADMIN_ID
+    return obj.from_user.id in ADMIN_IDS
 
 
 # ================================================================
@@ -714,13 +721,21 @@ async def handle_file(message: Message):
     if not cookies:
         await message.answer("❌ Не нашёл cookie в файле")
         return
-    await message.answer("📂 <b>{}</b> cookie. Начинаю...".format(len(cookies)))
-    for i, c in enumerate(cookies, 1):
-        hdr = await message.answer("🔄 {}/{}".format(i, len(cookies)))
+    await message.answer("📂 <b>{}</b> cookie. Запускаю параллельно (до 5 одновременно)...".format(len(cookies)))
+    counter = {"done": 0}
+    total_c = len(cookies)
+
+    async def process_one(c):
         await run_check(message, c)
-        try: await hdr.delete()
-        except Exception: pass
-        await asyncio.sleep(1)
+        counter["done"] += 1
+        if counter["done"] % 10 == 0 or counter["done"] == total_c:
+            try:
+                await message.answer("🔄 Прогресс: {}/{}".format(counter["done"], total_c))
+            except Exception:
+                pass
+
+    tasks = [process_one(c) for c in cookies]
+    await asyncio.gather(*tasks)
     await message.answer("✅ Готово! {} аккаунтов.".format(len(cookies)))
 
 
@@ -735,13 +750,21 @@ async def handle_text(message: Message, state: FSMContext):
     if len(lines) == 1:
         await run_check(message, lines[0])
     else:
-        await message.answer("📋 <b>{}</b> cookie. Начинаю...".format(len(lines)))
-        for i, c in enumerate(lines, 1):
-            hdr = await message.answer("🔄 {}/{}".format(i, len(lines)))
+        await message.answer("📋 <b>{}</b> cookie. Запускаю параллельно (до 5 одновременно)...".format(len(lines)))
+        counter2 = {"done": 0}
+        total_l  = len(lines)
+
+        async def process_line(c):
             await run_check(message, c)
-            try: await hdr.delete()
-            except Exception: pass
-            await asyncio.sleep(1)
+            counter2["done"] += 1
+            if counter2["done"] % 10 == 0 or counter2["done"] == total_l:
+                try:
+                    await message.answer("🔄 Прогресс: {}/{}".format(counter2["done"], total_l))
+                except Exception:
+                    pass
+
+        tasks2 = [process_line(c) for c in lines]
+        await asyncio.gather(*tasks2)
         await message.answer("✅ Готово! {} аккаунтов.".format(len(lines)))
 
 
