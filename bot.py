@@ -694,45 +694,46 @@ async def run_batch(message, cookies):
                 '  • <a href="https://www.roblox.com/catalog/{}">{}</a> — {} акк.'.format(iid, name, cnt)
             )
 
-    # ── Аккаунты с находками ──
+    summary = "\n".join(summary_lines)
+    await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
+
+    # ── Аккаунты с находками (отправляем отдельными сообщениями) ──
     hits = [(r, c) for r, c in valid_pairs if r["offsale"] or r["promo_found"]]
     if hits:
-        summary_lines += ["", "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                          "📋 <b>Аккаунты с находками:</b>"]
+        detailed_parts = []
         for r, cookie in hits:
             uid   = r["user_id"]
             uname = r["username"]
-            summary_lines.append("")
-            summary_lines.append(
-                '👤 <a href="https://www.roblox.com/users/{}/profile">{}</a>'.format(uid, uname)
-            )
+            lines = []
+            lines.append(f'👤 <a href="https://www.roblox.com/users/{uid}/profile">{uname}</a> (ID: {uid})')
+            lines.append("📋 Найденные предметы:")
             if r["offsale"]:
-                summary_lines.append("  🛑 Оффсейл ({} шт.):".format(len(r["offsale"])))
-                for it in r["offsale"]:
-                    badge = " 🔴U" if it["unique"] else (" 🟡L" if it["limited"] else "")
-                    summary_lines.append(
-                        '    • <a href="https://www.roblox.com/catalog/{}">{}</a>{}'.format(
-                            it["id"], it["name"], badge)
+                lines.append("🛑 Оффсейл:")
+                for it in sorted(r["offsale"], key=lambda x: x["year"] or 9999):
+                    lines.append(
+                        f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a> ({it["year"]})'
                     )
             if r["promo_found"]:
-                summary_lines.append("  🎁 Промо ({} шт.):".format(len(r["promo_found"])))
+                lines.append("🎁 Промо:")
                 for it in r["promo_found"]:
-                    summary_lines.append(
-                        '    • <a href="https://www.roblox.com/catalog/{}">{}</a>'.format(
-                            it["id"], it["name"])
+                    lines.append(
+                        f'  • <a href="https://www.roblox.com/catalog/{it["id"]}">{it["name"]}</a>'
                     )
-            summary_lines.append("  🍪 <code>{}</code>".format(cookie))
+            lines.append(f"🍪 <code>{cookie}</code>")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            detailed_parts.append("\n".join(lines))
 
-    summary = "\n".join(summary_lines)
-
-    # Telegram лимит 4096 — если больше шлём файлом
-    if len(summary) <= 4000:
-        await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
+        if detailed_parts:
+            full_detailed = "\n\n".join(detailed_parts)
+            # Разбиваем на части по 3500 символов
+            for i in range(0, len(full_detailed), 3500):
+                await message.answer(
+                    full_detailed[i:i+3500],
+                    link_preview_options=LinkPreviewOptions(is_disabled=True),
+                    parse_mode="HTML"
+                )
     else:
-        # Шлём краткую статистику в чат
-        short = "\n".join(summary_lines[:summary_lines.index("━━━━━━━━━━━━━━━━━━━━━━━━━━━")])
-        await message.answer(short + "\n\n<i>Полный отчёт с аккаунтами — в файле ниже</i>",
-                             link_preview_options=LinkPreviewOptions(is_disabled=True))
+        await message.answer("❌ Аккаунтов с находками нет.")
 
     # ── Всегда шлём txt файл ──
     if valid_pairs:
