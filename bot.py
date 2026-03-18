@@ -1,11 +1,3 @@
-"""
-Roblox Offsale Checker — быстрая версия
-- Одна сессия на аккаунт
-- Инвентарь: параллельно по всем типам  
-- Оффсейл: батч catalog API (120 шт. за запрос)
-- Фильтр: только платные оффсейл (не бесплатные смайлы)
-- Промо: пересечение с CODE_ITEMS по ID
-"""
 import asyncio, io, re, aiohttp
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
