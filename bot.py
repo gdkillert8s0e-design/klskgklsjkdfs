@@ -331,28 +331,42 @@ async def get_csrf(session):
 
 
 async def open_inventory(session):
-    """Открывает инвентарь для всех. Возвращает True при успехе."""
-    csrf = await get_csrf(session)
+    """Открывает инвентарь для всех через ту же сессию (с куком)."""
+    # Получаем CSRF через ту же сессию
+    csrf = None
+    for url in ["https://auth.roblox.com/v2/logout",
+                "https://accountsettings.roblox.com/v1/email"]:
+        try:
+            async with session.post(url) as r:
+                token = r.headers.get("x-csrf-token")
+                if token:
+                    csrf = token
+                    break
+        except Exception:
+            pass
+
     if not csrf:
         return False
 
     hdrs = {"x-csrf-token": csrf, "Content-Type": "application/json"}
 
-    # Пробуем все известные эндпоинты
-    for method_fn, url, body in [
-        (api_post,  "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
-                    {"inventoryPrivacy": 1}),
-        (api_patch, "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
-                    {"inventoryPrivacy": 1}),
-        (api_post,  "https://accountsettings.roblox.com/v1/privacy",
-                    {"InventoryPrivacySetting": "AllUsers"}),
-        (api_patch, "https://accountsettings.roblox.com/v1/privacy",
-                    {"InventoryPrivacySetting": "AllUsers"}),
+    for method_name, url, body in [
+        ("patch", "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
+                  {"inventoryPrivacy": 1}),
+        ("post",  "https://accountsettings.roblox.com/v1/privacy/inventory-privacy",
+                  {"inventoryPrivacy": 1}),
+        ("patch", "https://accountsettings.roblox.com/v1/privacy",
+                  {"InventoryPrivacySetting": "AllUsers"}),
+        ("post",  "https://accountsettings.roblox.com/v1/privacy",
+                  {"InventoryPrivacySetting": "AllUsers"}),
     ]:
-        result = await method_fn(session, url, json_data=body, extra_headers=hdrs)
-        status = result[0] if result else None
-        if status in (200, 204):
-            return True
+        try:
+            fn = session.patch if method_name == "patch" else session.post
+            async with fn(url, json=body, headers=hdrs) as r:
+                if r.status in (200, 204):
+                    return True
+        except Exception:
+            pass
 
     return False
 
@@ -387,66 +401,60 @@ async def load_inventory_type(session, user_id, type_str):
 
 async def load_all_inventory(session, user_id):
     """
-    Загружает весь инвентарь.
-    Если получает 403 — открывает и повторяет.
-    Возвращает отсортированный список ID (стабильный).
+    Загружает весь инвентарь через одну сессию.
+    Шаг 1: пробует загрузить.
+    Шаг 2: если 403 или пусто — открывает инвентарь и грузит заново.
+    Возвращает sorted list (стабильный порядок).
     """
     type_strings = []
     for key, on in settings["asset_types"].items():
         if on:
             type_strings.extend(ASSET_TYPE_STRINGS[key])
 
-    # Первая попытка
-    all_ids = set()
-    got_403 = False
+    async def fetch_all_types():
+        """Грузит все типы, возвращает (ids_set, got_403)."""
+        ids     = set()
+        got_403 = False
+        url     = "https://inventory.roblox.com/v2/users/{}/inventory".format(user_id)
 
-    for type_str in type_strings:
-        url = "https://inventory.roblox.com/v2/users/{}/inventory".format(user_id)
-        params = {"assetTypes": type_str, "limit": 100, "sortOrder": "Asc"}
-        try:
-            async with session.get(url, params=params) as r:
-                if r.status == 403:
-                    got_403 = True
+        for type_str in type_strings:
+            cursor = ""
+            while True:
+                params = {"assetTypes": type_str, "limit": 100, "sortOrder": "Asc"}
+                if cursor:
+                    params["cursor"] = cursor
+                try:
+                    async with session.get(url, params=params) as r:
+                        if r.status == 403:
+                            got_403 = True
+                            break
+                        if r.status != 200:
+                            break
+                        data = await r.json(content_type=None)
+                        for item in data.get("data", []):
+                            aid = item.get("assetId") or item.get("id")
+                            if aid:
+                                ids.add(int(aid))
+                        cursor = data.get("nextPageCursor") or ""
+                        if not cursor:
+                            break
+                except Exception:
                     break
-                if r.status == 200:
-                    data = await r.json(content_type=None)
-                    cursor = ""
-                    for item in data.get("data", []):
-                        aid = item.get("assetId") or item.get("id")
-                        if aid:
-                            all_ids.add(int(aid))
-                    cursor = data.get("nextPageCursor") or ""
-                    # Продолжаем пагинацию
-                    while cursor:
-                        params2 = {"assetTypes": type_str, "limit": 100,
-                                   "sortOrder": "Asc", "cursor": cursor}
-                        async with session.get(url, params=params2) as r2:
-                            if r2.status != 200:
-                                break
-                            data2 = await r2.json(content_type=None)
-                            for item in data2.get("data", []):
-                                aid = item.get("assetId") or item.get("id")
-                                if aid:
-                                    all_ids.add(int(aid))
-                            cursor = data2.get("nextPageCursor") or ""
-                        await asyncio.sleep(0.2)
-        except Exception:
-            pass
-        await asyncio.sleep(0.2)
+                await asyncio.sleep(0.2)
 
-    # Если закрыт — открываем и грузим заново
+        return ids, got_403
+
+    # Первая попытка
+    all_ids, got_403 = await fetch_all_types()
+
+    # Если закрыт или пусто — открываем и повторяем
     if got_403 or not all_ids:
         opened = await open_inventory(session)
         if opened:
-            await asyncio.sleep(2)  # ждём пока настройка применится
-            all_ids = set()
-            for type_str in type_strings:
-                ids = await load_inventory_type(session, user_id, type_str)
-                all_ids.update(ids)
-                await asyncio.sleep(0.2)
+            await asyncio.sleep(2.5)   # ждём пока Roblox применит настройку
+            all_ids, _ = await fetch_all_types()
 
-    return sorted(all_ids)  # сортировка = стабильный порядок
-
+    return sorted(all_ids)   # сортировка = одинаковый порядок при повторах
 
 async def get_asset_details(session, asset_id):
     """Детали одного предмета через economy API (fallback)."""
