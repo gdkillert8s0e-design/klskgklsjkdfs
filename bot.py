@@ -676,16 +676,40 @@ async def check_account(cookie, on_status, mode="offsale", search_term=None):
 # ================================================================
 
 async def silent_check(cookie, mode="offsale", search_term=None):
+    """
+    Проверяет аккаунт с повторами при неудаче.
+    Повторяет до 3 раз если инвентарь пустой или ошибка сети.
+    """
     async def noop(text):
         pass
+
     empty = {
         "valid": False, "user_id": None, "username": None,
         "offsale": [], "promo_found": [], "inv_total": 0, "search_results": [],
     }
-    try:
-        return await check_account(cookie, noop, mode=mode, search_term=search_term)
-    except Exception:
-        return empty
+
+    last_result = empty
+    for attempt in range(1, 4):   # 3 попытки
+        try:
+            r = await check_account(cookie, noop, mode=mode, search_term=search_term)
+        except Exception:
+            await asyncio.sleep(2 * attempt)
+            continue
+
+        if not r["valid"]:
+            # Невалидный кук — нет смысла повторять
+            return r
+
+        # Если инвентарь загрузился — возвращаем
+        if r["inv_total"] > 0:
+            return r
+
+        # Инвентарь пустой — ждём и повторяем
+        last_result = r
+        if attempt < 3:
+            await asyncio.sleep(3 * attempt)
+
+    return last_result
 
 
 # ================================================================
@@ -786,32 +810,29 @@ async def run_batch(message, cookies):
     dupes    = 0
 
     prog = await message.answer("⏳ Проверяю 0/{} ...".format(total))
-    sem  = asyncio.Semaphore(5)
 
-    async def worker(i, c):
-        nonlocal dupes
-        async with sem:
-            r = await silent_check(c)
-            results[i] = (r, c)
-            counter["done"] += 1
-            if r["valid"]:
-                counter["valid"] += 1
-                uid = r["user_id"]
-                if uid in seen_ids:
-                    dupes += 1
-                else:
-                    seen_ids[uid] = i
+    # Последовательная проверка — надёжнее параллельной
+    # Не мешают друг другу, каждый аккаунт получает полный ресурс
+    for i, c in enumerate(cookies):
+        r = await silent_check(c)
+        results[i] = (r, c)
+        counter["done"] += 1
+        if r["valid"]:
+            counter["valid"] += 1
+            uid = r["user_id"]
+            if uid in seen_ids:
+                dupes += 1
             else:
-                counter["invalid"] += 1
-            if counter["done"] % 5 == 0 or counter["done"] == total:
-                try:
-                    await prog.edit_text("⏳ {}/{}  ✅{}  ❌{}".format(
-                        counter["done"], total,
-                        counter["valid"], counter["invalid"]))
-                except Exception:
-                    pass
-
-    await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
+                seen_ids[uid] = i
+        else:
+            counter["invalid"] += 1
+        try:
+            await prog.edit_text("⏳ {}/{}  ✅{}  ❌{}".format(
+                counter["done"], total,
+                counter["valid"], counter["invalid"]))
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)   # пауза между аккаунтами
     try:
         await prog.delete()
     except Exception:
@@ -891,41 +912,37 @@ async def run_batch_search(message, cookies, term):
     prog = await message.answer(
         "🔍 «{}» — 0/{} ...".format(term, total)
     )
-    sem = asyncio.Semaphore(5)
 
-    async def worker(i, cookie):
-        nonlocal dupes
-        async with sem:
-            r = await silent_check(cookie, mode="search", search_term=term)
-            results[i] = (r, cookie)
-            counter["done"] += 1
-            if r["valid"]:
-                counter["valid"] += 1
-                uid = r["user_id"]
-                if uid in seen_ids:
-                    dupes += 1
-                else:
-                    seen_ids[uid] = i
+    # Последовательная проверка — каждый аккаунт проверяется полностью
+    for i, cookie in enumerate(cookies):
+        r = await silent_check(cookie, mode="search", search_term=term)
+        results[i] = (r, cookie)
+        counter["done"] += 1
+        if r["valid"]:
+            counter["valid"] += 1
+            uid = r["user_id"]
+            if uid in seen_ids:
+                dupes += 1
             else:
-                counter["invalid"] += 1
-            found_now = sum(
-                len(x[0]["search_results"]) for x in results
-                if x and x[0] and x[0].get("search_results")
+                seen_ids[uid] = i
+        else:
+            counter["invalid"] += 1
+        found_now = sum(
+            len(x[0]["search_results"]) for x in results
+            if x and x[0] and x[0].get("search_results")
+        )
+        elapsed = (datetime.now() - start).total_seconds()
+        speed   = counter["done"] / elapsed if elapsed > 0 else 0
+        try:
+            await prog.edit_text(
+                "🔍 «{}» — {}/{}  ✅{}  ❌{}  🎯{}  {:.1f}/с".format(
+                    term, counter["done"], total,
+                    counter["valid"], counter["invalid"],
+                    found_now, speed)
             )
-            if counter["done"] % 5 == 0 or counter["done"] == total:
-                elapsed = (datetime.now() - start).total_seconds()
-                speed   = counter["done"] / elapsed if elapsed > 0 else 0
-                try:
-                    await prog.edit_text(
-                        "🔍 «{}» — {}/{}  ✅{}  ❌{}  🎯{}  {:.1f}/с".format(
-                            term, counter["done"], total,
-                            counter["valid"], counter["invalid"],
-                            found_now, speed)
-                    )
-                except Exception:
-                    pass
-
-    await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
     try:
         await prog.delete()
     except Exception:
