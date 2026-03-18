@@ -449,11 +449,74 @@ async def load_all_inventory(session, user_id):
 
 
 async def get_asset_details(session, asset_id):
-    """Детали предмета через economy API."""
+    """Детали одного предмета через economy API (fallback)."""
     return await api_get(
         session,
         "https://economy.roblox.com/v2/assets/{}/details".format(asset_id)
     )
+
+
+async def get_catalog_batch(asset_ids):
+    """
+    Батч-запрос к catalog API — до 120 предметов за раз.
+    Не требует авторизации. Возвращает {asset_id: item_dict}.
+    """
+    result = {}
+    # Catalog API не требует кук — используем чистую сессию
+    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession(
+        connector=connector,
+        timeout=aiohttp.ClientTimeout(total=30),
+        headers={"User-Agent": UA, "Accept": "application/json",
+                 "Content-Type": "application/json"}
+    ) as s:
+        for i in range(0, len(asset_ids), 120):
+            chunk   = asset_ids[i:i + 120]
+            payload = {"items": [{"itemType": "Asset", "id": aid} for aid in chunk]}
+            for attempt in range(3):
+                try:
+                    async with s.post(
+                        "https://catalog.roblox.com/v1/catalog/items/details",
+                        json=payload
+                    ) as r:
+                        if r.status == 200:
+                            data = await r.json(content_type=None)
+                            for item in data.get("data", []):
+                                aid = item.get("id")
+                                if aid:
+                                    result[int(aid)] = item
+                            break
+                        elif r.status == 429:
+                            await asyncio.sleep(3)
+                        else:
+                            break
+                except Exception:
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
+    return result
+
+
+def catalog_is_offsale(item):
+    """Определяет оффсейл по ответу catalog API."""
+    ps = item.get("priceStatus") or ""
+    if ps == "Off Sale":
+        return True
+    if ps == "No Price" and item.get("price") is None:
+        return True
+    return False
+
+
+def catalog_get_year(item):
+    """Год создания из catalog API."""
+    for field in ("createdUtc", "created"):
+        val = item.get(field)
+        if val:
+            try:
+                return datetime.fromisoformat(str(val).replace("Z", "+00:00")).year
+            except Exception:
+                pass
+    return 0
 
 
 async def owns_item(session, user_id, asset_id):
@@ -510,30 +573,18 @@ async def check_account(cookie, on_status, mode="offsale", search_term=None):
         if mode == "search" and search_term:
             term_lower = search_term.lower()
             total = len(all_ids)
-            await on_status("✅ <b>{}</b>\n🔍 Ищу «{}» ({} предм.)...".format(
+            await on_status("✅ <b>{}</b>\n🔍 Ищу «{}» в {} предм...".format(
                 uname, search_term, total))
 
-            for i, asset_id in enumerate(all_ids):
-                if i % 50 == 0:
-                    await on_status("✅ <b>{}</b>\n🔍 «{}»: {}/{}...".format(
-                        uname, search_term, i, total))
-                det = await get_asset_details(session, asset_id)
-                if not det:
-                    await asyncio.sleep(0.1)
-                    continue
-                name = det.get("Name", "")
+            # Батч-запрос: получаем данные сразу по 120 предметов
+            catalog = await get_catalog_batch(all_ids)
+            for asset_id, item in catalog.items():
+                name = item.get("name") or item.get("Name") or ""
                 if term_lower in name.lower():
-                    year = 0
-                    try:
-                        dt   = datetime.fromisoformat(
-                            det.get("Created", "").replace("Z", "+00:00"))
-                        year = dt.year
-                    except Exception:
-                        pass
+                    year = catalog_get_year(item)
                     result["search_results"].append(
                         {"id": asset_id, "name": name, "year": year}
                     )
-                await asyncio.sleep(0.1)
             return result
 
         # ── РЕЖИМ ОФФСЕЙЛ ─────────────────────────────────────────
@@ -553,49 +604,61 @@ async def check_account(cookie, on_status, mode="offsale", search_term=None):
                     )
                 await asyncio.sleep(0.15)
 
-        # Оффсейл предметы
+        # Оффсейл предметы — батч через catalog API (120 за раз, намного быстрее)
         total = len(all_ids)
-        await on_status("✅ <b>{}</b>\n🔍 Проверяю {} предметов...".format(uname, total))
+        await on_status("✅ <b>{}</b>\n🔍 Проверяю {} предметов (батч)...".format(uname, total))
 
-        for i, asset_id in enumerate(all_ids):
-            if i % 30 == 0:
-                await on_status("✅ <b>{}</b>\n🔍 {}/{}...".format(uname, i, total))
+        catalog = await get_catalog_batch(all_ids)
 
-            det = await get_asset_details(session, asset_id)
-            if not det:
-                await asyncio.sleep(0.1)
+        for asset_id, item in catalog.items():
+            if not catalog_is_offsale(item):
                 continue
 
-            # IsForSale=False → нельзя купить → оффсейл
-            if det.get("IsForSale", True):
-                await asyncio.sleep(0.1)
-                continue
-
-            # Фильтр по году
-            year = 0
-            try:
-                dt   = datetime.fromisoformat(
-                    det.get("Created", "").replace("Z", "+00:00"))
-                year = dt.year
-            except Exception:
-                pass
-
+            year = catalog_get_year(item)
             if year and not (settings["year_from"] <= year <= settings["year_to"]):
-                await asyncio.sleep(0.1)
                 continue
 
-            is_unique  = det.get("IsLimitedUnique", False)
-            is_limited = det.get("IsLimited", False) or is_unique
-            name       = det.get("Name") or "ID:{}".format(asset_id)
+            restrictions = item.get("itemRestrictions") or []
+            is_unique    = "LimitedUnique" in restrictions
+            is_limited   = "Limited" in restrictions or is_unique
+            name         = item.get("name") or item.get("Name") or "ID:{}".format(asset_id)
 
             result["offsale"].append({
-                "id":      asset_id,
+                "id":      int(asset_id),
                 "name":    name,
                 "year":    year,
                 "limited": is_limited,
                 "unique":  is_unique,
             })
-            await asyncio.sleep(0.1)
+
+        # Для предметов которых нет в catalog — fallback через economy API
+        missing = [aid for aid in all_ids if aid not in catalog]
+        if missing:
+            await on_status("✅ <b>{}</b>\n🔍 Проверяю {} предметов (fallback)...".format(
+                uname, len(missing)))
+            for asset_id in missing:
+                det = await get_asset_details(session, asset_id)
+                if not det or det.get("IsForSale", True):
+                    await asyncio.sleep(0.05)
+                    continue
+                year = 0
+                try:
+                    dt   = datetime.fromisoformat(
+                        det.get("Created", "").replace("Z", "+00:00"))
+                    year = dt.year
+                except Exception:
+                    pass
+                if year and not (settings["year_from"] <= year <= settings["year_to"]):
+                    await asyncio.sleep(0.05)
+                    continue
+                is_unique  = det.get("IsLimitedUnique", False)
+                is_limited = det.get("IsLimited", False) or is_unique
+                name       = det.get("Name") or "ID:{}".format(asset_id)
+                result["offsale"].append({
+                    "id": asset_id, "name": name, "year": year,
+                    "limited": is_limited, "unique": is_unique,
+                })
+                await asyncio.sleep(0.05)
 
     return result
 
