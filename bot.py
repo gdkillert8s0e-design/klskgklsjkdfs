@@ -158,11 +158,19 @@ CHECK_SEM = asyncio.Semaphore(5)
 # ========== HELPERS ==========
 
 def _parse_one_cookie(raw):
+    """Извлекает чистый кук из строки любого формата."""
     c = raw.strip()
+    # Формат с метаданными: "... | Cookie: VALUE"
     if "Cookie: " in c:
         c = c.split("Cookie: ")[-1].strip()
-    if "_|WARNING" in c and "--|" in c:
+    # Убираем WARNING заголовок Roblox
+    # Новый формат:  _|WARNING:-...|_ACTUALCOOKIE
+    if c.startswith("_|WARNING") and "|_" in c:
+        c = c.split("|_", 1)[-1].strip()
+    # Старый формат: _|WARNING:-...--|ACTUALCOOKIE
+    elif "_|WARNING" in c and "--|" in c:
         c = c.split("--|", 1)[-1].strip()
+    # Убираем префикс имени куки если есть
     for p in [".ROBLOSECURITY=", "ROBLOSECURITY="]:
         if c.lower().startswith(p.lower()):
             c = c[len(p):]
@@ -173,25 +181,52 @@ def clean_cookie(raw):
     return _parse_one_cookie(raw)
 
 
+def _is_roblox_cookie(val):
+    """Проверяет что строка это реальный кук Roblox, а не мусор из метаданных."""
+    if len(val) < 50:
+        return False
+    # Куки не содержат пробелов
+    if " " in val:
+        return False
+    # Типичные слова из метаданных — не куки
+    for bad in ["Username", "Cookie", "WARNING", "http", "Birthdate",
+                "Country", "Robux", "Email", "Playtime", "Gamepass",
+                "Badge", "Sessions", "Followers", "roblox.com"]:
+        if bad in val:
+            return False
+    # Roblox куки — base64url строки, допустимые символы:
+    import re as _re
+    if not _re.match(r'^[A-Za-z0-9\-_=+/.%]+$', val):
+        return False
+    return True
+
+
 def extract_cookies(text):
-    """Извлекает все куки из текста любого формата."""
+    """Извлекает все куки из текста любого формата. Строго фильтрует мусор."""
     cookies = []
     seen    = set()
     lines   = re.split(r"\r?\n", text)
+
     for line in lines:
         line = line.strip()
         if not line:
             continue
+
+        # Строки с явным маркером Cookie: — берём только значение после него
         if "Cookie: " in line:
-            val = _parse_one_cookie(line)
-            if len(val) > 50 and val not in seen:
+            raw = line.split("Cookie: ")[-1].strip()
+            val = _parse_one_cookie(raw)
+            if _is_roblox_cookie(val) and val not in seen:
                 seen.add(val)
                 cookies.append(val)
-        else:
-            val = _parse_one_cookie(line)
-            if len(val) > 50 and val not in seen:
-                seen.add(val)
-                cookies.append(val)
+            continue
+
+        # Голые строки — пробуем весь кук
+        val = _parse_one_cookie(line)
+        if _is_roblox_cookie(val) and val not in seen:
+            seen.add(val)
+            cookies.append(val)
+
     return cookies
 
 
