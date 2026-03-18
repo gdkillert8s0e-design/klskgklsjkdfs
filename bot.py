@@ -153,36 +153,67 @@ class SearchState(StatesGroup):
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 
+CHECK_SEM = asyncio.Semaphore(5)
+
 # ========== HELPERS ==========
 
-def clean_cookie(raw):
+def _parse_one_cookie(raw):
+    """Очищает одну строку и возвращает голый кук или пустую строку."""
     c = raw.strip()
+    # Формат: "... | Cookie: _|WARNING...|_VALUE"
     if "Cookie: " in c:
         c = c.split("Cookie: ")[-1].strip()
+    # Убираем WARNING-заголовок Roblox
     if "_|WARNING" in c and "--|" in c:
         c = c.split("--|", 1)[-1].strip()
+    # Убираем префикс
     for p in [".ROBLOSECURITY=", "ROBLOSECURITY="]:
         if c.lower().startswith(p.lower()):
             c = c[len(p):]
     return c.strip()
 
 
-def extract_cookies_from_lines(raw_lines):
-    """Извлекает куки из строк любого формата"""
+def clean_cookie(raw):
+    return _parse_one_cookie(raw)
+
+
+def extract_cookies(text):
+    """
+    Принимает текст (содержимое файла или сообщения).
+    Умеет разбирать:
+      - строки вида "Username: ... | Cookie: _|WARNING...|_VALUE"
+      - голые куки по одному на строку
+      - текст где все куки в одной строке разделены пробелами
+    Возвращает список уникальных куков длиннее 50 символов.
+    """
     cookies = []
-    for l in raw_lines:
-        l = l.strip()
-        if not l:
+    seen    = set()
+
+    # Пробуем разделить и по \n и по \r\n
+    lines = re.split(r'\r?\n', text)
+
+    for line in lines:
+        line = line.strip()
+        if not line:
             continue
-        if "Cookie: " in l:
-            val = l.split("Cookie: ")[-1].strip()
-            val = clean_cookie(val)
-            if len(val) > 50:
+
+        # Формат с метаданными: "... | Cookie: VALUE"
+        if "Cookie: " in line:
+            val = _parse_one_cookie(line)
+            if len(val) > 50 and val not in seen:
+                seen.add(val)
                 cookies.append(val)
-        else:
-            val = clean_cookie(l)
-            if len(val) > 50:
+            continue
+
+        # Голая строка — может быть один кук или несколько через пробел
+        # Разбиваем по пробелу если есть несколько длинных частей
+        parts = line.split()
+        for part in parts:
+            val = _parse_one_cookie(part)
+            if len(val) > 50 and val not in seen:
+                seen.add(val)
                 cookies.append(val)
+
     return cookies
 
 
@@ -202,10 +233,6 @@ def new_s():
         connector=aiohttp.TCPConnector(ssl=False),
         timeout=aiohttp.ClientTimeout(total=30)
     )
-
-
-def strip_html(text):
-    return re.sub(r"<[^>]+>", "", text)
 
 
 # ========== AUTH ==========
@@ -374,10 +401,6 @@ async def check_owns(cookie, user_id, asset_id):
 # ========== MAIN CHECK ==========
 
 async def check_account(cookie, status_msg, mode="offsale", search_term=None):
-    """
-    mode = "offsale"  — обычная проверка
-    mode = "search"   — поиск предмета по названию
-    """
     result = {
         "valid":          False,
         "user_id":        None,
@@ -431,7 +454,6 @@ async def check_account(cookie, status_msg, mode="offsale", search_term=None):
         await status_msg.edit_text(
             "✅ <b>{}</b>\n🔍 Ищу «{}» в {} предметах...".format(uname, search_term, len(all_ids))
         )
-        found = []
         for asset_id in all_ids:
             det = await get_details(cookie, asset_id)
             if not det:
@@ -447,16 +469,13 @@ async def check_account(cookie, status_msg, mode="offsale", search_term=None):
                         year = dt.year
                 except Exception:
                     pass
-                found.append({"id": asset_id, "name": name, "year": year})
+                result["search_results"].append({"id": asset_id, "name": name, "year": year})
                 log("Найден: {} ({})".format(name, year))
             await asyncio.sleep(0.1)
-        result["search_results"] = found
-        log("Итого найдено: {}".format(len(found)))
+        log("Итого найдено: {}".format(len(result["search_results"])))
         return result
 
     # ── Режим оффсейл ─────────────────────────────────────────────
-
-    # Промо
     if settings["check_promo"]:
         promo_keys = list(CODE_ITEMS.keys())
         total_p    = len(promo_keys)
@@ -475,7 +494,6 @@ async def check_account(cookie, status_msg, mode="offsale", search_term=None):
             await asyncio.sleep(0.2)
         log("Промо найдено: {}".format(len(result["promo_found"])))
 
-    # Оффсейл
     await status_msg.edit_text(
         "✅ <b>{}</b>\n🔍 Проверяю {} предметов...".format(uname, len(all_ids))
     )
@@ -520,34 +538,29 @@ async def check_account(cookie, status_msg, mode="offsale", search_term=None):
     return result
 
 
-# ========== SILENT CHECKS (для батча) ==========
+# ========== SILENT CHECK (для батча) ==========
 
 class _FakeMsg:
     async def edit_text(self, *a, **kw):
         pass
 
 
-async def _silent_check(cookie, mode="offsale", search_term=None, retries=3):
-    """Тихая проверка с повторными попытками при временных ошибках."""
-    for attempt in range(1, retries + 1):
+async def _silent_check(cookie, mode="offsale", search_term=None):
+    empty = {
+        "valid": False, "user_id": None, "username": None,
+        "offsale": [], "promo_found": [], "inv_total": 0,
+        "inv_opened": False, "debug": [], "search_results": [],
+    }
+    for attempt in range(1, 4):
         try:
             return await check_account(cookie, _FakeMsg(), mode=mode, search_term=search_term)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            if attempt == retries:
-                # логгирование можно добавить при необходимости
-                return {
-                    "valid": False, "user_id": None, "username": None,
-                    "offsale": [], "promo_found": [], "inv_total": 0,
-                    "inv_opened": False, "debug": [], "search_results": [],
-                }
-            await asyncio.sleep(2 ** attempt)  # 2,4,8 сек
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            if attempt == 3:
+                return empty
+            await asyncio.sleep(2 ** attempt)
         except Exception:
-            # Неожиданная ошибка – сразу возвращаем пустой результат
-            return {
-                "valid": False, "user_id": None, "username": None,
-                "offsale": [], "promo_found": [], "inv_total": 0,
-                "inv_opened": False, "debug": [], "search_results": [],
-            }
+            return empty
+    return empty
 
 
 # ========== REPORT BUILDER ==========
@@ -592,9 +605,6 @@ def build_report(result):
 
 
 # ========== SINGLE CHECK ==========
-
-CHECK_SEM = asyncio.Semaphore(5)
-
 
 async def run_check(message, cookie, show_debug=False):
     cookie = clean_cookie(cookie)
@@ -681,7 +691,6 @@ async def run_batch(message, cookies):
     ]
     hits = [(r, c) for r, c in valid_pairs if r["offsale"] or r["promo_found"]]
 
-    # Итоговое сообщение
     summary = (
         "📊 <b>Итоги проверки</b>\n\n"
         "🔢 Всего: <b>{}</b>\n"
@@ -697,7 +706,6 @@ async def run_batch(message, cookies):
     )
     await message.answer(summary)
 
-    # Файл с находками
     if hits:
         lines = ["АККАУНТЫ С НАХОДКАМИ", "=" * 60, ""]
         for r, c in hits:
@@ -740,22 +748,22 @@ async def run_batch(message, cookies):
 # ========== BATCH SEARCH ==========
 
 async def run_batch_search(message, cookies, search_term):
-    total = len(cookies)
-    results = [None] * total
-    counter = {"done": 0, "valid": 0, "invalid": 0, "found": 0}
+    total    = len(cookies)
+    results  = [None] * total
+    counter  = {"done": 0, "valid": 0, "invalid": 0}
     seen_ids = {}
-    dupes = 0
+    dupes    = 0
+    start    = datetime.now()
 
-    start_time = datetime.now()
     prog_msg = await message.answer(
-        f"🔍 Поиск «{search_term}» по {total} кукам… 0/{total} (0 найдено)"
+        "🔍 Поиск «{}» по {} кукам... 0/{} (найдено: 0)".format(search_term, total, total)
     )
     sem = asyncio.Semaphore(5)
 
     async def worker(i, cookie):
         nonlocal dupes
         async with sem:
-            r = await _silent_check(cookie, mode="search", search_term=search_term, retries=3)
+            r = await _silent_check(cookie, mode="search", search_term=search_term)
             results[i] = (r, cookie)
             counter["done"] += 1
             if r["valid"]:
@@ -765,54 +773,65 @@ async def run_batch_search(message, cookies, search_term):
                     dupes += 1
                 else:
                     seen_ids[uid] = i
-                if r.get("search_results"):
-                    counter["found"] += len(r["search_results"])
             else:
                 counter["invalid"] += 1
-            # обновляем прогресс каждые 5 завершённых
+            found_so_far = sum(
+                len(x[0]["search_results"]) for x in results
+                if x and x[0] and x[0].get("search_results")
+            )
             if counter["done"] % 5 == 0 or counter["done"] == total:
-                elapsed = (datetime.now() - start_time).total_seconds()
-                speed = counter["done"] / elapsed if elapsed > 0 else 0
+                elapsed = (datetime.now() - start).total_seconds()
+                speed   = counter["done"] / elapsed if elapsed > 0 else 0
                 try:
                     await prog_msg.edit_text(
-                        f"🔍 «{search_term}» — {counter['done']}/{total} | "
-                        f"✅{counter['valid']} ❌{counter['invalid']} | "
-                        f"🎯 найдено: {counter['found']} | {speed:.1f} кук/с"
+                        "🔍 «{}» — {}/{} | ✅{} ❌{} | 🎯{} предм | {:.1f} кук/с".format(
+                            search_term, counter["done"], total,
+                            counter["valid"], counter["invalid"],
+                            found_so_far, speed
+                        )
                     )
                 except Exception:
                     pass
 
     await asyncio.gather(*[worker(i, c) for i, c in enumerate(cookies)])
-    await prog_msg.delete()
+    try:
+        await prog_msg.delete()
+    except Exception:
+        pass
 
     valid_pairs = [
         (r, c) for (r, c) in results
         if r and r["valid"] and r["user_id"] in seen_ids
     ]
-    hits = [(r, c) for r, c in valid_pairs if r.get("search_results")]
+    hits        = [(r, c) for r, c in valid_pairs if r.get("search_results")]
     total_found = sum(len(r["search_results"]) for r, _ in hits)
+    elapsed     = (datetime.now() - start).total_seconds()
 
-    elapsed = (datetime.now() - start_time).total_seconds()
     summary = (
-        f"✅ <b>Поиск завершён</b>\n\n"
-        f"🔍 Запрос: «{search_term}»\n"
-        f"⏱ Время: {elapsed:.1f} с\n\n"
-        f"🔢 Всего куков: <b>{total}</b>\n"
-        f"✅ Валидных: <b>{counter['valid']}</b>\n"
-        f"❌ Невалидных: <b>{counter['invalid']}</b>\n"
-        f"👥 Дубликатов: <b>{dupes}</b>\n\n"
-        f"🎯 Акков с находками: <b>{len(hits)}</b>\n"
-        f"📦 Всего предметов: <b>{total_found}</b>"
+        "✅ <b>Поиск завершён</b>\n\n"
+        "🔍 Запрос: «<b>{}</b>»\n"
+        "⏱ Время: {:.1f} с\n\n"
+        "🔢 Всего куков: <b>{}</b>\n"
+        "✅ Валидных: <b>{}</b>\n"
+        "❌ Невалидных: <b>{}</b>\n"
+        "👥 Дубликатов: <b>{}</b>\n\n"
+        "🎯 Акков с находками: <b>{}</b>\n"
+        "📦 Всего предметов: <b>{}</b>"
+    ).format(
+        search_term, elapsed,
+        total, counter["valid"], counter["invalid"], dupes,
+        len(hits), total_found
     )
     await message.answer(summary, link_preview_options=LinkPreviewOptions(is_disabled=True))
 
     if hits:
         lines = [
-            f"РЕЗУЛЬТАТЫ ПОИСКА: «{search_term}»",
+            "РЕЗУЛЬТАТЫ ПОИСКА: «{}»".format(search_term),
             "=" * 60,
-            f"Всего куков: {total} | Валид: {counter['valid']} | Невалид: {counter['invalid']} | Дубли: {dupes}",
-            f"Акков с находками: {len(hits)} | Предметов: {total_found}",
-            f"Время выполнения: {elapsed:.1f} с",
+            "Всего куков: {} | Валид: {} | Невалид: {} | Дубли: {}".format(
+                total, counter["valid"], counter["invalid"], dupes),
+            "Акков с находками: {} | Предметов: {}".format(len(hits), total_found),
+            "Время: {:.1f} с".format(elapsed),
             "",
         ]
         for r, cookie in hits:
@@ -820,26 +839,27 @@ async def run_batch_search(message, cookies, search_term):
             found = r["search_results"]
             lines += [
                 "=" * 60,
-                f"Аккаунт: {uname} (ID: {uid})",
-                f"Ссылка: https://www.roblox.com/users/{uid}/profile",
-                f"Куки: {cookie}",
+                "Аккаунт: {} (ID: {})".format(uname, uid),
+                "Ссылка: https://www.roblox.com/users/{}/profile".format(uid),
+                "Куки: {}".format(cookie),
                 "",
-                f"Найдено «{search_term}» ({len(found)} шт.):",
+                "Найдено «{}» ({} шт.):".format(search_term, len(found)),
             ]
             for item in found:
-                lines.append(f"  • {item['name']} ({item['year'] or '?'}) — https://www.roblox.com/catalog/{item['id']}")
+                lines.append("  • {} ({}) — https://www.roblox.com/catalog/{}".format(
+                    item["name"], item["year"] or "?", item["id"]))
             lines.append("")
 
         f = BufferedInputFile(
             "\n".join(lines).encode("utf-8"),
-            filename=f"search_{search_term.replace(' ', '_')}.txt"
+            filename="search_{}.txt".format(search_term.replace(" ", "_"))
         )
         await message.answer_document(
             f,
-            caption=f"🔍 Найдено «{search_term}» на {len(hits)} акках ({total_found} шт.)"
+            caption="🔍 «{}» найдено на {} акках ({} шт.)".format(search_term, len(hits), total_found)
         )
     else:
-        await message.answer(f"❌ Ни на одном аккаунте не найдено «{search_term}».")
+        await message.answer("❌ «{}» не найдено ни на одном аккаунте.".format(search_term))
 
 
 # ========== КЛАВИАТУРА ==========
@@ -887,10 +907,7 @@ async def cmd_info(message: Message):
         return
     types_on = [ASSET_LABELS[k] for k, v in settings["asset_types"].items() if v]
     await message.answer(
-        "ℹ️ <b>Настройки</b>\n"
-        "📅 {}-{}\n"
-        "🎁 Промо: {}\n"
-        "📦 {}".format(
+        "ℹ️ <b>Настройки</b>\n📅 {}-{}\n🎁 Промо: {}\n📦 {}".format(
             settings["year_from"], settings["year_to"],
             "✅" if settings["check_promo"] else "❌",
             ", ".join(types_on)
@@ -928,8 +945,7 @@ async def cmd_search(message: Message, state: FSMContext):
     term = parts[1].strip()
     await state.update_data(search_term=term)
     await message.answer(
-        "🔍 Ищем «<b>{}</b>»\n\n"
-        "Отправь куки текстом или .txt файлом:".format(term)
+        "🔍 Ищем «<b>{}</b>»\n\nОтправь куки текстом или .txt файлом:".format(term)
     )
     await state.set_state(SearchState.waiting_for_cookie)
 
@@ -950,21 +966,9 @@ async def process_search_term(message: Message, state: FSMContext):
     await state.set_state(SearchState.waiting_for_cookie)
 
 
-@dp.message(SearchState.waiting_for_cookie, F.text)
-async def handle_search_text(message: Message, state: FSMContext):
-    if not is_admin(message):
-        await state.clear()
-        return
-    data   = await state.get_data()
-    term   = data.get("search_term", "")
-    cookies = extract_cookies_from_lines(message.text.splitlines())
-    if not cookies:
-        await message.answer("❌ Не найдено валидных куков.")
-        await state.clear()
-        return
-    await state.clear()
+async def _do_search(message, cookies, term):
+    """Общая логика запуска поиска (1 или много куков)."""
     if len(cookies) == 1:
-        # Одиночный поиск
         async with CHECK_SEM:
             status_msg = await message.answer("⏳ Авторизация...")
             r = await check_account(cookies[0], status_msg, mode="search", search_term=term)
@@ -973,7 +977,7 @@ async def handle_search_text(message: Message, state: FSMContext):
             return
         found = r["search_results"]
         if found:
-            lines = ["🔍 <b>«{}»</b> на аккаунте {}:\n".format(term, r["username"])]
+            lines = ["🔍 <b>«{}»</b> на аккаунте <b>{}</b>:\n".format(term, r["username"])]
             for it in found:
                 lines.append('• <a href="https://www.roblox.com/catalog/{}">{}</a> ({})'.format(
                     it["id"], it["name"], it["year"] or "?"))
@@ -1004,36 +1008,30 @@ async def handle_search_file(message: Message, state: FSMContext):
     buf  = io.BytesIO()
     await bot.download_file(file.file_path, destination=buf)
     buf.seek(0)
-    cookies = extract_cookies_from_lines(buf.read().decode("utf-8", errors="ignore").splitlines())
+    text    = buf.read().decode("utf-8", errors="ignore")
+    cookies = extract_cookies(text)
+    await state.clear()
     if not cookies:
-        await message.answer("❌ Не найдено валидных куков.")
+        await message.answer("❌ Не найдено валидных куков в файле.")
+        return
+    await message.answer("🔍 Найдено <b>{}</b> куков. Ищу «{}»...".format(len(cookies), term))
+    await _do_search(message, cookies, term)
+
+
+@dp.message(SearchState.waiting_for_cookie, F.text)
+async def handle_search_text(message: Message, state: FSMContext):
+    if not is_admin(message):
         await state.clear()
         return
+    data    = await state.get_data()
+    term    = data.get("search_term", "")
+    cookies = extract_cookies(message.text)
     await state.clear()
-    if len(cookies) == 1:
-        # Одиночный поиск
-        async with CHECK_SEM:
-            status_msg = await message.answer("⏳ Авторизация...")
-            r = await check_account(cookies[0], status_msg, mode="search", search_term=term)
-        if not r["valid"]:
-            await status_msg.edit_text("❌ Невалидный cookie")
-            return
-        found = r["search_results"]
-        if found:
-            lines = ["🔍 <b>«{}»</b> на аккаунте {}:\n".format(term, r["username"])]
-            for it in found:
-                lines.append('• <a href="https://www.roblox.com/catalog/{}">{}</a> ({})'.format(
-                    it["id"], it["name"], it["year"] or "?"))
-            await status_msg.edit_text(
-                "\n".join(lines),
-                link_preview_options=LinkPreviewOptions(is_disabled=True)
-            )
-        else:
-            await status_msg.edit_text(
-                "❌ На аккаунте {} не найдено «{}».".format(r["username"], term)
-            )
-    else:
-        await run_batch_search(message, cookies, term)
+    if not cookies:
+        await message.answer("❌ Не найдено валидных куков.")
+        return
+    await message.answer("🔍 Найдено <b>{}</b> куков. Ищу «{}»...".format(len(cookies), term))
+    await _do_search(message, cookies, term)
 
 
 @dp.callback_query(F.data.startswith("tog_"))
@@ -1108,13 +1106,15 @@ async def handle_file(message: Message, state: FSMContext):
         await message.answer("❌ Нужен .txt файл")
         return
     file = await bot.get_file(doc.file_id)
-    buf = io.BytesIO()
+    buf  = io.BytesIO()
     await bot.download_file(file.file_path, destination=buf)
     buf.seek(0)
-    cookies = extract_cookies_from_lines(buf.read().decode("utf-8", errors="ignore").splitlines())
+    text    = buf.read().decode("utf-8", errors="ignore")
+    cookies = extract_cookies(text)
     if not cookies:
         await message.answer("❌ Не нашёл cookie в файле")
         return
+    await message.answer("📂 Найдено <b>{}</b> куков.".format(len(cookies)))
     if len(cookies) == 1:
         await run_check(message, cookies[0])
     else:
@@ -1127,7 +1127,7 @@ async def handle_text(message: Message, state: FSMContext):
         return
     if await state.get_state():
         return
-    cookies = extract_cookies_from_lines(message.text.splitlines())
+    cookies = extract_cookies(message.text)
     if not cookies:
         await message.answer("ℹ️ Отправь cookie или .txt файл\n/settings")
         return
